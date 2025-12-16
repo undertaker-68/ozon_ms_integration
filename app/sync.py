@@ -25,13 +25,24 @@ def main() -> int:
     oz1 = OzonClient(OzonCreds("OZON1", cfg.ozon1_client_id, cfg.ozon1_api_key, cfg.ozon1_warehouse_id), cfg.cache_dir)
     oz2 = OzonClient(OzonCreds("OZON2", cfg.ozon2_client_id, cfg.ozon2_api_key, cfg.ozon2_warehouse_id), cfg.cache_dir)
 
-    # 1) Загружаем offer_id из Ozon (для маршрутизации)
+    # 1) Загружаем offer_id из Ozon (для маршрутизации) — отдельно по кабинетам
+    oz1_ids = set()
+    oz2_ids = set()
+
     try:
         oz1_ids = oz1.list_offer_ids()
-        oz2_ids = oz2.list_offer_ids()
-        log_json(logger, "ozon_offer_ids_loaded", cabinet1=len(oz1_ids), cabinet2=len(oz2_ids))
+        log_json(logger, "ozon_offer_ids_loaded", cabinet="OZON1", count=len(oz1_ids))
     except Exception as e:
-        log_json(logger, "ozon_offer_ids_failed", error=str(e))
+        log_json(logger, "ozon_offer_ids_failed", cabinet="OZON1", error=str(e))
+
+    try:
+        oz2_ids = oz2.list_offer_ids()
+        log_json(logger, "ozon_offer_ids_loaded", cabinet="OZON2", count=len(oz2_ids))
+    except Exception as e:
+        log_json(logger, "ozon_offer_ids_failed", cabinet="OZON2", error=str(e))
+
+    if not oz1_ids and not oz2_ids:
+        # оба кабинета недоступны — продолжать бессмысленно
         return 2
 
     # 2) Остатки МойСклад по складу
@@ -45,12 +56,17 @@ def main() -> int:
 
     avail_by_href = availability_by_href(rows)
 
-    # 3) Готовим товары (offer_id = article)
+    # 3) Резолвим offer_id (article) по meta.href через карточки товаров
+    hrefs = [r.href for r in rows]
+    href_to_article = ms.resolve_articles_by_hrefs(hrefs)
+
     items: List[Dict[str, Any]] = []
     for r in rows:
-        if not r.article:
+        art = (href_to_article.get(r.href) or "").strip()
+        if not art:
+            # если у товара нет артикула — просто пропускаем (можно логировать отдельно)
             continue
-        items.append({"offer_id": r.article, "stock": int(r.available), "kind": "product"})
+        items.append({"offer_id": art, "stock": int(r.available), "kind": "product"})
 
     # 4) Комплекты (bundle)
     try:
@@ -70,24 +86,25 @@ def main() -> int:
     except Exception as e:
         log_json(logger, "moysklad_bundles_failed", error=str(e))
 
-    # 5) Маршрутизация по кабинетам
+        # 5) Маршрутизация по кабинетам
     oz1_payload: List[Dict[str, Any]] = []
     oz2_payload: List[Dict[str, Any]] = []
     missing = 0
-    
-        # Нормализация "похожих" кириллических букв -> латиница
+
+    # Нормализация "похожих" кириллических букв -> латиница
     conf = str.maketrans({
         "А":"A","В":"B","Е":"E","К":"K","М":"M","Н":"H","О":"O","Р":"P","С":"C","Т":"T","Х":"X","У":"Y",
         "а":"a","в":"b","е":"e","к":"k","м":"m","н":"h","о":"o","р":"p","с":"c","т":"t","х":"x","у":"y",
     })
+
     def norm(s: str) -> str:
         return (s or "").strip().translate(conf)
 
     # Мапы: нормализованный offer_id -> реальный offer_id Ozon
     oz1_norm = {norm(x): x for x in oz1_ids}
     oz2_norm = {norm(x): x for x in oz2_ids}
-    
-    f    for it in items:
+
+    for it in items:
         ms_oid = it["offer_id"]
         key = norm(ms_oid)
 
@@ -103,6 +120,7 @@ def main() -> int:
             log_json(logger, "not_in_ozon", offer_id=ms_oid, kind=it.get("kind"))
 
     log_json(logger, "routing_done", ozon1=len(oz1_payload), ozon2=len(oz2_payload), missing=missing)
+
 
     # 6) Отправка остатков батчами
     def push(client: OzonClient, payload: List[Dict[str, Any]], name: str):
