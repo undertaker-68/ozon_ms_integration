@@ -162,3 +162,18 @@ class MoySkladClient:
             headers=self.headers,
             params={"expand": "components.assortment"},
         )
+
+    def get_bundle_components(self, bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Надёжно получаем компоненты комплекта через meta.href: .../bundle/<id>/components
+        """
+        comps = bundle.get("components")
+        if isinstance(comps, dict):
+            meta = comps.get("meta") or {}
+            href = meta.get("href")
+            if href:
+                data = request_json("GET", href, headers=self.headers, timeout=60)
+                rows = data.get("rows") or []
+                if isinstance(rows, list):
+                    return rows
+        return []
