@@ -45,6 +45,7 @@ class MoySkladClient:
                 continue
 
             href = ((r.get("meta") or {}).get("href")) or ""
+            href = href.split("?", 1)[0]
             if not href:
                 continue
 
