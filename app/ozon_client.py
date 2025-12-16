@@ -21,7 +21,9 @@ class OzonClient:
     def __init__(self, creds: OzonCreds, cache_dir: str):
         self.creds = creds
         os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(cache_dir, f"offer_ids_{creds.name.lower()}.json")
+        self.cache_path = os.path.join(
+            cache_dir, f"offer_ids_{creds.name.lower()}.json"
+        )
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -30,8 +32,10 @@ class OzonClient:
             "Content-Type": "application/json",
         }
 
-        def list_offer_ids(self, ttl_seconds: int = 7 * 60) -> Set[str]:
+    def list_offer_ids(self, ttl_seconds: int = 7 * 60) -> Set[str]:
         now = time.time()
+
+        # cache
         try:
             if os.path.exists(self.cache_path):
                 with open(self.cache_path, "r", encoding="utf-8") as f:
@@ -43,9 +47,8 @@ class OzonClient:
 
         offer_ids: Set[str] = set()
 
-        # Set limit to 100 (safe default)
         last_id = ""
-        limit = 100
+        limit = 100  # безопасный лимит
         seen_last_ids = set()
 
         url = f"{OZON_BASE}/v3/product/list"
@@ -55,11 +58,23 @@ class OzonClient:
                 break
             seen_last_ids.add(last_id)
 
-            body: Dict[str, Any] = {"filter": {}, "last_id": last_id, "limit": limit}
-            data = request_json("POST", url, headers=self._headers(), json_body=body, timeout=60)
+            body: Dict[str, Any] = {
+                "filter": {},
+                "last_id": last_id,
+                "limit": limit,
+            }
+
+            data = request_json(
+                "POST",
+                url,
+                headers=self._headers(),
+                json_body=body,
+                timeout=60,
+            )
 
             result = data.get("result") or {}
             items = result.get("items") or []
+
             for it in items:
                 oid = it.get("offer_id")
                 if oid:
@@ -71,7 +86,11 @@ class OzonClient:
 
         try:
             with open(self.cache_path, "w", encoding="utf-8") as f:
-                json.dump({"ts": now, "offer_ids": sorted(offer_ids)}, f, ensure_ascii=False)
+                json.dump(
+                    {"ts": now, "offer_ids": sorted(offer_ids)},
+                    f,
+                    ensure_ascii=False,
+                )
         except Exception:
             pass
 
@@ -89,4 +108,10 @@ class OzonClient:
                 for s in stocks
             ]
         }
-        return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=60)
+        return request_json(
+            "POST",
+            url,
+            headers=self._headers(),
+            json_body=payload,
+            timeout=60,
+        )
