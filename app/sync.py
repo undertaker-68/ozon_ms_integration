@@ -74,16 +74,33 @@ def main() -> int:
     oz1_payload: List[Dict[str, Any]] = []
     oz2_payload: List[Dict[str, Any]] = []
     missing = 0
+    
+        # Нормализация "похожих" кириллических букв -> латиница
+    conf = str.maketrans({
+        "А":"A","В":"B","Е":"E","К":"K","М":"M","Н":"H","О":"O","Р":"P","С":"C","Т":"T","Х":"X","У":"Y",
+        "а":"a","в":"b","е":"e","к":"k","м":"m","н":"h","о":"o","р":"p","с":"c","т":"t","х":"x","у":"y",
+    })
+    def norm(s: str) -> str:
+        return (s or "").strip().translate(conf)
 
-    for it in items:
-        oid = it["offer_id"]
-        if oid in oz1_ids:
-            oz1_payload.append({"offer_id": oid, "stock": it["stock"]})
-        elif oid in oz2_ids:
-            oz2_payload.append({"offer_id": oid, "stock": it["stock"]})
+    # Мапы: нормализованный offer_id -> реальный offer_id Ozon
+    oz1_norm = {norm(x): x for x in oz1_ids}
+    oz2_norm = {norm(x): x for x in oz2_ids}
+    
+    f    for it in items:
+        ms_oid = it["offer_id"]
+        key = norm(ms_oid)
+
+        real1 = oz1_norm.get(key)
+        real2 = oz2_norm.get(key)
+
+        if real1:
+            oz1_payload.append({"offer_id": real1, "stock": it["stock"]})
+        elif real2:
+            oz2_payload.append({"offer_id": real2, "stock": it["stock"]})
         else:
             missing += 1
-            log_json(logger, "not_in_ozon", offer_id=oid, kind=it.get("kind"))
+            log_json(logger, "not_in_ozon", offer_id=ms_oid, kind=it.get("kind"))
 
     log_json(logger, "routing_done", ozon1=len(oz1_payload), ozon2=len(oz2_payload), missing=missing)
 
