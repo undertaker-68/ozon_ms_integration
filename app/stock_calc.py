@@ -1,5 +1,5 @@
 cat > app/stock_calc.py <<'EOF'
-from __future__ import annotations
+from _future_ import annotations
 
 from typing import Any, Dict, List
 import math
