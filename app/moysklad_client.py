@@ -155,10 +155,10 @@ class MoySkladClient:
         return out
 
     def get_bundle(self, bundle_id: str) -> Dict[str, Any]:
-    url = f"{MS_BASE}/entity/bundle/{bundle_id}"
-    return request_json(
-        "GET",
-        url,
-        headers=self.headers,
-        params={"expand": "components.assortment"},
-    )
+        url = f"{MS_BASE}/entity/bundle/{bundle_id}"
+        return request_json(
+            "GET",
+            url,
+            headers=self.headers,
+            params={"expand": "components.assortment"},
+        )
