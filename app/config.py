@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-load_dotenv(ENV_PATH)
+load_dotenv(ENV_PATH, override=True)
 
 def _req(name: str) -> str:
     v = os.getenv(name)
