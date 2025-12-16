@@ -30,9 +30,8 @@ class OzonClient:
             "Content-Type": "application/json",
         }
 
-    def list_offer_ids(self, ttl_seconds: int = 7 * 60) -> Set[str]:
+        def list_offer_ids(self, ttl_seconds: int = 7 * 60) -> Set[str]:
         now = time.time()
-        # cache
         try:
             if os.path.exists(self.cache_path):
                 with open(self.cache_path, "r", encoding="utf-8") as f:
@@ -42,13 +41,20 @@ class OzonClient:
         except Exception:
             pass
 
-        url = f"{OZON_BASE}/v3/product/list"
         offer_ids: Set[str] = set()
 
+        # Set limit to 100 (safe default)
         last_id = ""
-        limit = 1000
+        limit = 100
+        seen_last_ids = set()
+
+        url = f"{OZON_BASE}/v3/product/list"
 
         while True:
+            if last_id in seen_last_ids:
+                break
+            seen_last_ids.add(last_id)
+
             body: Dict[str, Any] = {"filter": {}, "last_id": last_id, "limit": limit}
             data = request_json("POST", url, headers=self._headers(), json_body=body, timeout=60)
 
