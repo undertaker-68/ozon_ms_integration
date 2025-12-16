@@ -1,0 +1,12 @@
+[Unit]
+Description=MoySklad -> Ozon stock sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ozon_ms_integration
+EnvironmentFile=/root/ozon_ms_integration/.env
+ExecStart=/root/ozon_ms_integration/.venv/bin/python -m app.sync
+User=root
+Group=root

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run MoySklad -> Ozon stock sync every 8 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=8min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
