@@ -1,3 +1,4 @@
+import time
 import requests
 from typing import Any, Dict, Optional
 
@@ -15,24 +16,40 @@ def request_json(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
     timeout: int = 60,
+    max_retries: int = 6,
 ) -> Dict[str, Any]:
-    # ВАЖНО: полностью игнорируем proxy из окружения
+    # ВАЖНО: игнорируем proxy из окружения
     s = requests.Session()
     s.trust_env = False
 
-    r = s.request(
-        method=method,
-        url=url,
-        headers=headers,
-        params=params,
-        json=json_body,
-        timeout=timeout,
-    )
+    for attempt in range(max_retries + 1):
+        r = s.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=json_body,
+            timeout=timeout,
+        )
 
-    if r.status_code >= 400:
-        raise HttpError(r.status_code, r.text, url)
+        # Retry on rate limit / temporary errors
+        if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
+            ra = r.headers.get("Retry-After")
+            if ra and ra.isdigit():
+                sleep_s = int(ra)
+            else:
+                # exponential backoff: 1,2,4,8... with small cap
+                sleep_s = min(20, 2 ** attempt)
+            time.sleep(sleep_s)
+            continue
 
-    if not r.text.strip():
-        return {}
+        if r.status_code >= 400:
+            raise HttpError(r.status_code, r.text, url)
 
-    return r.json()
+        if not r.text.strip():
+            return {}
+
+        return r.json()
+
+    # theoretically unreachable
+    raise HttpError(599, "Max retries exceeded", url)
