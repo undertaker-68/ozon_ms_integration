@@ -24,6 +24,15 @@ class OzonClient:
         self.cache_path = os.path.join(cache_dir, f"offer_ids_{creds.name.lower()}.json")
 
     def _headers(self) -> Dict[str, str]:
+        # DEBUG (временно): проверяем, что реально уходит
+        # печатаем только длину ключа и последние 4 символа
+        def _headers(self) -> Dict[str, str]:
+        h = {
+            "Client-Id": self.creds.client_id,
+            "Api-Key": self.creds.api_key,
+            "Content-Type": "application/json",
+        }
+        return h
         return {
             "Client-Id": self.creds.client_id,
             "Api-Key": self.creds.api_key,
