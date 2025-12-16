@@ -48,4 +48,3 @@ def compute_bundle_stock(bundle: Dict[str, Any], avail_by_href: Dict[str, float]
 
     v = math.floor(min(mins))
     return int(max(0, v))
-EOF
