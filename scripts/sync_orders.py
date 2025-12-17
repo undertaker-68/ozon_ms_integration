@@ -93,6 +93,18 @@ def main() -> None:
                 posting_number=r.get("posting_number"),
             )
 
+            status = (status or "").strip().lower()
+
+            if status == "delivering":
+                dem.create_from_customerorder_if_missing(
+                    customerorder=order,
+                    posting_number=r.get("posting_number") or "",
+                    sales_channel_id=channel_id,
+                )
+
+            if status == "cancelled":
+                co.remove_reserve(order)
+
             if status == "cancelled":
                 co.remove_reserve(order)
 
