@@ -13,6 +13,7 @@ from app.orders_sync.constants import (
 )
 from app.orders_sync.ms_customerorder import CustomerOrderService
 
+from app.orders_sync.ms_demand import DemandService
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
