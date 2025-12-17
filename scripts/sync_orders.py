@@ -95,8 +95,6 @@ def main() -> None:
                 continue
 
             # подчистить дубли отгрузок по связанному заказу (если они уже есть)
-            dem.ensure_single_demand_for_order(order)
-
             co.ensure_prices(order)
             dem.ensure_single_demand_for_order(order)
 
