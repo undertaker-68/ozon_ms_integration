@@ -55,7 +55,6 @@ class CustomerOrderService:
 
     def upsert_from_ozon(
         self,
-        *,
         order_number: str,
         ozon_status: str,
         shipment_date: str,
