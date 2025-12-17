@@ -44,7 +44,7 @@ class CustomerOrderService:
 
             positions.append(
                 {
-                    "assortment": (ass.get("meta") or {}),
+                    "assortment": {"meta": (ass.get("meta") or {})},
                     "quantity": qty,
                     "price": price,
                     "reserve": qty,  # включаем резерв
