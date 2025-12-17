@@ -116,7 +116,7 @@ class OzonClient:
             timeout=60,
         )
 
-        def _to_ozon_ts(self, dt: Any) -> str:
+    def _to_ozon_ts(self, dt: Any) -> str:
         """
         Convert datetime/str to Ozon ISO8601 string with Z.
         Accepts:
