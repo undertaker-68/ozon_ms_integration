@@ -48,6 +48,37 @@ class CustomerOrderService:
 
         return None
 
+    def ensure_prices(self, order: dict) -> None:
+        """
+        Если в заказе покупателя у строк price=0 — ставим цену продажи из МС.
+        Обновляем каждую позицию по meta.href (надёжно).
+        """
+        order_id = order["id"]
+        pos = self.ms.get(f"/entity/customerorder/{order_id}/positions", params={"limit": 1000})
+        rows = pos.get("rows") or []
+
+        for r in rows:
+            if int(r.get("price") or 0) != 0:
+                continue
+
+            ass_meta = ((r.get("assortment") or {}).get("meta") or {})
+            href = ass_meta.get("href")
+            if not href:
+                continue
+
+            ass = self.ms.get(href)
+            price = extract_sale_price_cents(ass)
+            if price <= 0:
+                continue
+
+            # обновляем позицию по meta.href
+            rmeta = (r.get("meta") or {})
+            rhref = rmeta.get("href")
+            if not rhref:
+                continue
+
+            self.ms.put(rhref, json={"price": int(price)})
+
     def build_positions(self, products: list[dict]) -> list[dict]:
         positions: list[dict] = []
 
