@@ -113,7 +113,8 @@ class CustomerOrderService:
     def remove_reserve(self, order: dict) -> dict:
         """
         Снимаем резерв по всем позициям заказа.
-        Самый надёжный способ: обновляем строки по meta (href+type).
+        Вызывается ТОЛЬКО при статусе Ozon = cancelled.
+        Реализация: PUT каждой позиции по meta.href (единственный стабильный способ).
         """
         order_id = order["id"]
 
@@ -123,19 +124,16 @@ class CustomerOrderService:
         )
         rows = pos.get("rows") or []
 
-        patch_rows: list[dict] = []
         for r in rows:
             meta = (r.get("meta") or {})
             href = meta.get("href")
-            rtype = meta.get("type")
-            if not href or not rtype:
+            if not href:
                 continue
-            patch_rows.append({"meta": {"href": href, "type": rtype}, "reserve": 0})
 
-        if patch_rows:
+            # Обновляем конкретную позицию
             self.ms.put(
-                f"/entity/customerorder/{order_id}/positions",
-                json={"rows": patch_rows},
+                href,
+                json={"reserve": 0},
             )
 
         return self.ms.get(f"/entity/customerorder/{order_id}")
