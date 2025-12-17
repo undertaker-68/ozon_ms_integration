@@ -42,6 +42,7 @@ class DemandService:
             "externalCode": posting_number,
             "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
             "store": ms_meta("store", MS_STORE_OZON_ID),
+            "organization": ms_meta("organization", MS_ORGANIZATION_ID),
             "customerOrder": (customerorder.get("meta") or {}),
             "state": ms_demand_state_meta(demand_state_id),
             "salesChannel": ms_sales_channel_meta(sales_channel_id),
