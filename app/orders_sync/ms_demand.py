@@ -30,7 +30,7 @@ class DemandService:
         )
         return resp.get("rows") or []
 
-     def delete_demand(self, demand_id: str) -> None:
+    def delete_demand(self, demand_id: str) -> None:
         self.ms.delete(f"/entity/demand/{demand_id}")
 
     def ensure_single_demand(self, posting_number: str) -> dict | None:
@@ -86,7 +86,7 @@ class DemandService:
 
     def create_from_customerorder_if_missing(
         self,
-         *,
+        *,
         customerorder: Dict[str, Any],
         posting_number: str,
         sales_channel_id: str,
