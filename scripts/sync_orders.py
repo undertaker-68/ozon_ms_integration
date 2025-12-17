@@ -98,7 +98,7 @@ def main() -> None:
             dem.ensure_single_demand_for_order(order)
 
             co.ensure_prices(order)
-            dem.ensure_single_demand(posting_number)
+            dem.ensure_single_demand_for_order(order)
 
             # delivering → создаём отгрузку (если нет)
             if status == "delivering":
