@@ -124,7 +124,7 @@ class CustomerOrderService:
             json=patch,
         )
 
-        def remove_reserve(self, order: dict) -> dict:
+    def remove_reserve(self, order: dict) -> dict:
         """
         Снимаем резерв по всем позициям заказа.
         Надёжно: если у позиции нет поля id, берём его из meta.href.
@@ -137,7 +137,7 @@ class CustomerOrderService:
         )
         rows = pos.get("rows") or []
 
-        def id_from_href(href: str) -> str | None:
+    def id_from_href(href: str) -> str | None:
             # .../entity/customerorder/<order_id>/positions/<pos_id>
             if not href:
                 return None
