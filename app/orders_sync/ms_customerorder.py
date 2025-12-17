@@ -117,7 +117,8 @@ class CustomerOrderService:
 
     def remove_reserve(self, order: dict) -> dict:
         """
-        Снимаем резерв по всем позициям заказа
+        Снимаем резерв по всем позициям заказа.
+        Надёжно: обновляем позиции по их meta (а не по id).
         """
         order_id = order["id"]
 
@@ -127,7 +128,30 @@ class CustomerOrderService:
         )
         rows = pos.get("rows") or []
 
-        def id_from_href(href: str) -> str | None:
+        patch_rows = []
+        for r in rows:
+            meta = (r.get("meta") or {})
+            href = meta.get("href")
+            rtype = meta.get("type")
+            if not href or not rtype:
+                continue  # пропускаем битую строку
+
+            patch_rows.append(
+                {
+                    "meta": {"href": href, "type": rtype},
+                    "reserve": 0,
+                }
+            )
+
+        if patch_rows:
+            self.ms.put(
+                f"/entity/customerorder/{order_id}/positions",
+                json={"rows": patch_rows},
+            )
+
+        return self.ms.get(f"/entity/customerorder/{order_id}")
+
+    def id_from_href(href: str) -> str | None:
             if not href:
                 return None
             return href.rstrip("/").split("/")[-1]
