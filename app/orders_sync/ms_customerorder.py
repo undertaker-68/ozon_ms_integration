@@ -27,12 +27,29 @@ class CustomerOrderService:
         self.ass = AssortmentResolver(ms)
 
     def find_by_name(self, name: str) -> dict | None:
+        name = (name or "").strip()
+        if not name:
+            return None
+
+        # 1) Пробуем через search (стабильнее, чем filter для name)
         resp = self.ms.get(
             "/entity/customerorder",
-            params={"filter": f'name="{name}"', "limit": 1},
+            params={"search": name, "limit": 100},
         )
         rows = resp.get("rows") or []
-        return rows[0] if rows else None
+        for x in rows:
+            if (x.get("name") or "").strip() == name:
+                return x
+
+        # 2) Фолбэк: пробуем filter с кавычками и без
+        for flt in (f'name="{name}"', f"name={name}"):
+            resp = self.ms.get("/entity/customerorder", params={"filter": flt, "limit": 50})
+            rows = resp.get("rows") or []
+            for x in rows:
+                if (x.get("name") or "").strip() == name:
+                    return x
+
+        return None
 
     # === используется ТОЛЬКО при создании заказа ===
     def build_positions(self, products: list[dict]) -> list[dict]:
