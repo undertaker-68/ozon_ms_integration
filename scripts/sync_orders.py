@@ -102,11 +102,14 @@ def main() -> None:
 
             # delivering → создаём отгрузку (если нет)
             if status == "delivering":
-                dem.create_from_customerorder_if_missing(
+                demand = dem.create_from_customerorder_if_missing(
                     customerorder=order,
                     posting_number=posting_number,
                     sales_channel_id=channel_id,
                 )
+
+                if demand is None:
+                    print(f"[{name}] SKIP demand for {posting_number}: no stock in MS")
 
             # cancelled → снимаем резерв
             if status == "cancelled":
