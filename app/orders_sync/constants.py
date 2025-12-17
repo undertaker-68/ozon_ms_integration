@@ -8,6 +8,8 @@ OZON_ORDERS_CUTOFF = datetime(2025, 12, 8, 0, 0, 0, tzinfo=timezone.utc)
 MS_COUNTERPARTY_OZON_ID = "f61bfcf9-2d74-11ec-0a80-04c700041e03"
 MS_STORE_OZON_ID = "42db7535-5bb6-11ef-0a80-1589000daaa3"
 
+MS_ORGANIZATION_ID = "12d36dcd-8b6c-11e9-9109-f8fc00176e21"
+
 # CustomerOrder states (MS)
 OZON_TO_MS_STATE = {
     "awaiting_packaging": "ffb88772-9fd0-11ee-0a80-0641000f3d5f",
