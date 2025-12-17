@@ -31,15 +31,14 @@ class CustomerOrderService:
         if not name:
             return None
 
-        resp = self.ms.get(
-            "/entity/customerorder",
-            params={"search": name, "limit": 100},
-        )
+        # search (надёжнее, чем filter по name)
+        resp = self.ms.get("/entity/customerorder", params={"search": name, "limit": 100})
         rows = resp.get("rows") or []
         for x in rows:
             if (x.get("name") or "").strip() == name:
                 return x
 
+        # fallback filter
         for flt in (f'name="{name}"', f"name={name}"):
             resp = self.ms.get("/entity/customerorder", params={"filter": flt, "limit": 50})
             rows = resp.get("rows") or []
@@ -79,7 +78,6 @@ class CustomerOrderService:
         sales_channel_id: str,
         posting_number: str | None = None,
     ) -> dict:
-
         if not posting_number:
             raise ValueError("posting_number is required")
 
@@ -92,6 +90,7 @@ class CustomerOrderService:
 
         existing = self.find_by_name(ms_name)
 
+        # Создание нового заказа (только один раз)
         if not existing:
             payload: dict[str, Any] = {
                 "name": ms_name,
@@ -103,22 +102,18 @@ class CustomerOrderService:
                 "shipmentPlannedMoment": parse_dt(shipment_date),
                 "salesChannel": ms_sales_channel_meta(sales_channel_id),
                 "positions": {"rows": self.build_positions(products)},
-                "externalCode": order_number.strip(),
+                "externalCode": (order_number or "").strip(),  # справочно
             }
             return self.ms.post("/entity/customerorder", json=payload)
 
-        patch = {
-            "state": ms_state_meta(state_id),
-        }
-        return self.ms.put(
-            f"/entity/customerorder/{existing['id']}",
-            json=patch,
-        )
+        # Обновление существующего заказа: ТОЛЬКО статус
+        patch = {"state": ms_state_meta(state_id)}
+        return self.ms.put(f"/entity/customerorder/{existing['id']}", json=patch)
 
     def remove_reserve(self, order: dict) -> dict:
         """
         Снимаем резерв по всем позициям заказа.
-        Надёжно: обновляем позиции по их meta (а не по id).
+        Самый надёжный способ: обновляем строки по meta (href+type).
         """
         order_id = order["id"]
 
@@ -128,42 +123,14 @@ class CustomerOrderService:
         )
         rows = pos.get("rows") or []
 
-        patch_rows = []
+        patch_rows: list[dict] = []
         for r in rows:
             meta = (r.get("meta") or {})
             href = meta.get("href")
             rtype = meta.get("type")
             if not href or not rtype:
-                continue  # пропускаем битую строку
-
-            patch_rows.append(
-                {
-                    "meta": {"href": href, "type": rtype},
-                    "reserve": 0,
-                }
-            )
-
-        if patch_rows:
-            self.ms.put(
-                f"/entity/customerorder/{order_id}/positions",
-                json={"rows": patch_rows},
-            )
-
-        return self.ms.get(f"/entity/customerorder/{order_id}")
-
-    def id_from_href(href: str) -> str | None:
-            if not href:
-                return None
-            return href.rstrip("/").split("/")[-1]
-
-        patch_rows = []
-        for r in rows:
-            pid = r.get("id")
-            if not pid:
-                pid = id_from_href(((r.get("meta") or {}).get("href")) or "")
-            if not pid:
                 continue
-            patch_rows.append({"id": pid, "reserve": 0})
+            patch_rows.append({"meta": {"href": href, "type": rtype}, "reserve": 0})
 
         if patch_rows:
             self.ms.put(
