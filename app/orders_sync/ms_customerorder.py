@@ -10,11 +10,14 @@ from .constants import (
 from .ms_meta import ms_meta, ms_state_meta, ms_sales_channel_meta
 from .assortment import AssortmentResolver, extract_sale_price_cents
 
+from datetime import datetime, timezone
 
 def parse_dt(s: str) -> str:
-    # МС принимает ISO; оставляем как есть (Ozon отдаёт Z)
-    return s
-
+    # Ozon: 2025-12-16T13:00:00Z
+    # MS wants: 2025-12-16 13:00:00.000
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 class CustomerOrderService:
     def __init__(self, ms):
