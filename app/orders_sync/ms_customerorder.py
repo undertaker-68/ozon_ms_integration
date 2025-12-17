@@ -75,6 +75,7 @@ class CustomerOrderService:
             payload: dict[str, Any] = {
                 "name": order_number,
                 "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
+                "organization": ms_meta("organization", MS_ORGANIZATION_ID),
                 "store": ms_meta("store", MS_STORE_OZON_ID),
                 "state": ms_state_meta(state_id),
                 "moment": parse_dt(shipment_date),               # Дата заказа
