@@ -6,6 +6,7 @@ from .constants import (
     MS_COUNTERPARTY_OZON_ID,
     MS_STORE_OZON_ID,
     OZON_TO_MS_STATE,
+    MS_ORGANIZATION_ID,
 )
 from .ms_meta import ms_meta, ms_state_meta, ms_sales_channel_meta
 from .assortment import AssortmentResolver, extract_sale_price_cents
