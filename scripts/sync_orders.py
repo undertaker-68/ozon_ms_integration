@@ -77,44 +77,40 @@ def main() -> None:
             if shipment_date < OZON_ORDERS_CUTOFF.isoformat().replace("+00:00", "Z"):
                 continue
 
-            order_number = r.get("order_number")
-            status = r.get("status")
+            posting_number = (r.get("posting_number") or "").strip()
+            status = (r.get("status") or "").strip().lower()
             products = r.get("products") or []
 
-            if not order_number or not status:
+            if not posting_number or not status:
                 continue
 
-            order = co.upsert_from_ozon(
-                order_number=order_number,
-                ozon_status=status,
-                shipment_date=shipment_date,
-                products=products,
-                sales_channel_id=channel_id,
-                posting_number=r.get("posting_number"),
-            )
-
             try:
-                order = co.upsert_from_ozon(...)
+                order = co.upsert_from_ozon(
+                    order_number=posting_number,      # <-- ключ МС = posting_number (...-1)
+                    ozon_status=status,
+                    shipment_date=shipment_date,
+                    products=products,
+                    sales_channel_id=channel_id,
+                    posting_number=posting_number,
+                )
             except Exception as e:
-                print(f"[{name}] SKIP order {order_number}: {e}")
+                print(f"[{name}] SKIP posting {posting_number}: {e}")
                 continue
 
             status = (status or "").strip().lower()
             pn = r.get("posting_number") or ""
 
-            if status == "delivering" and pn:
+                        if status == "delivering":
                 dem.create_from_customerorder_if_missing(
                     customerorder=order,
-                    posting_number=pn,
+                    posting_number=posting_number,
                     sales_channel_id=channel_id,
                 )
 
             if status == "cancelled":
                 co.remove_reserve(order)
 
-
-            print(f"[{name}] synced order {order_number} status={status}")
-
+            print(f"[{name}] synced {posting_number} status={status}")
 
 if __name__ == "__main__":
     main()
