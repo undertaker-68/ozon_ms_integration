@@ -204,7 +204,16 @@ class DemandService:
             "positions": {"rows": rows},
         }
 
-        created = self.ms.post("/entity/demand", json=payload)
+        try:
+            created = self.ms.post("/entity/demand", json=payload)
+        except HttpError as e:
+            # Нельзя отгрузить товар, которого нет на складе → просто пропускаем
+            if e.status_code == 412 and '"code" : 3007' in e.message:
+                return None
+            raise
+
+        if not created:
+            return None
 
         # 3) На всякий случай (если МС что-то сконвертил) — лечим нули
         self._fill_demand_positions_if_empty(created, customerorder)
