@@ -1,24 +1,25 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
 
 from .constants import (
     MS_COUNTERPARTY_OZON_ID,
     MS_STORE_OZON_ID,
-    OZON_TO_MS_STATE,
     MS_ORGANIZATION_ID,
+    OZON_TO_MS_STATE,
 )
 from .ms_meta import ms_meta, ms_state_meta, ms_sales_channel_meta
 from .assortment import AssortmentResolver, extract_sale_price_cents
 
-from datetime import datetime, timezone
 
 def parse_dt(s: str) -> str:
     # Ozon: 2025-12-16T13:00:00Z
-    # MS wants: 2025-12-16 13:00:00.000
+    # MS:   2025-12-16 13:00:00.000
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
 
 class CustomerOrderService:
     def __init__(self, ms):
@@ -33,17 +34,10 @@ class CustomerOrderService:
         rows = resp.get("rows") or []
         return rows[0] if rows else None
 
-    def find_by_external_code(self, external_code: str) -> dict | None:
-        resp = self.ms.get(
-            "/entity/customerorder",
-            params={"filter": f'externalCode="{external_code}"', "limit": 1},
-        )
-        rows = resp.get("rows") or []
-        return rows[0] if rows else None
-
     # === используется ТОЛЬКО при создании заказа ===
     def build_positions(self, products: list[dict]) -> list[dict]:
         positions: list[dict] = []
+
         for p in products:
             offer_id = str(p["offer_id"]).strip()
             qty = float(p.get("quantity") or 0)
@@ -53,15 +47,16 @@ class CustomerOrderService:
 
             positions.append(
                 {
-                    "assortment": {"meta": (ass.get("meta") or {})},
+                    "assortment": {"meta": ass["meta"]},
                     "quantity": qty,
                     "price": price,
-                    "reserve": qty,  # включаем резерв
+                    "reserve": qty,
                 }
             )
+
         return positions
 
-        def upsert_from_ozon(
+    def upsert_from_ozon(
         self,
         order_number: str,
         ozon_status: str,
@@ -71,29 +66,26 @@ class CustomerOrderService:
         posting_number: str | None = None,
     ) -> dict:
         """
-        ВАЖНО: MS CustomerOrder.name = Ozon posting_number (например 57245188-0251-1)
-        order_number (например 57245188-0251) храним в externalCode для справки/поиска.
+        MS CustomerOrder.name = Ozon posting_number (например 57245188-0251-1)
+        order_number (без -1) сохраняем в externalCode
         """
 
         if not posting_number:
-            raise ValueError("posting_number is required (for MS order name)")
+            raise ValueError("posting_number is required")
 
-        ms_name = str(posting_number).strip()  # <-- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+        ms_name = posting_number.strip()
 
         ozon_status = (ozon_status or "").strip().lower()
         state_id = OZON_TO_MS_STATE.get(ozon_status)
         if not state_id:
             raise ValueError(f"Unknown ozon status: {ozon_status}")
 
-        # Ищем заказ в МС по name == posting_number
         existing = self.find_by_name(ms_name)
 
-        # ======================================================
-        # 1) ЗАКАЗА НЕТ → СОЗДАЁМ ПОЛНОСТЬЮ
-        # ======================================================
+        # ===== СОЗДАНИЕ =====
         if not existing:
             payload: dict[str, Any] = {
-                "name": ms_name,  # <-- posting_number
+                "name": ms_name,
                 "organization": ms_meta("organization", MS_ORGANIZATION_ID),
                 "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
                 "store": ms_meta("store", MS_STORE_OZON_ID),
@@ -102,29 +94,20 @@ class CustomerOrderService:
                 "shipmentPlannedMoment": parse_dt(shipment_date),
                 "salesChannel": ms_sales_channel_meta(sales_channel_id),
                 "positions": {"rows": self.build_positions(products)},
+                "externalCode": order_number.strip(),
             }
-
-            # Сохраняем "короткий" order_number в externalCode (опционально, но полезно)
-            payload["externalCode"] = str(order_number).strip()
-
             return self.ms.post("/entity/customerorder", json=payload)
 
-        # ======================================================
-        # 2) ЗАКАЗ УЖЕ ЕСТЬ → ОБНОВЛЯЕМ ТОЛЬКО СТАТУС
-        # ======================================================
+        # ===== ОБНОВЛЕНИЕ (ТОЛЬКО СТАТУС) =====
         patch = {
             "state": ms_state_meta(state_id),
         }
-
         return self.ms.put(
             f"/entity/customerorder/{existing['id']}",
             json=patch,
         )
 
     def remove_reserve(self, order: dict) -> dict:
-        """
-        Снимаем резерв по всем позициям заказа
-        """
         order_id = order["id"]
 
         pos = self.ms.get(
