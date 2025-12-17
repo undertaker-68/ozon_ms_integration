@@ -6,6 +6,7 @@ from .constants import (
     MS_COUNTERPARTY_OZON_ID,
     MS_STORE_OZON_ID,
     MS_DEMAND_STATE_FBS_ID,
+    MS_ORGANIZATION_ID,
 )
 from .ms_meta import ms_meta, ms_demand_state_meta, ms_sales_channel_meta
 
