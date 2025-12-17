@@ -12,8 +12,8 @@ from app.orders_sync.constants import (
     MS_SALES_CHANNEL_CAB2_ID,
 )
 from app.orders_sync.ms_customerorder import CustomerOrderService
-
 from app.orders_sync.ms_demand import DemandService
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -62,31 +62,28 @@ def main() -> None:
         postings = oz.fbs_list(date_from=date_from, date_to=date_to, limit=100)
 
         for p in postings:
-            pn = p.get("posting_number")
-            if not pn:
+            posting_number = p.get("posting_number")
+            if not posting_number:
                 continue
 
-            d = oz.fbs_get(pn)
+            d = oz.fbs_get(posting_number)
             r = d.get("result") or {}
-
-            shipment_date = r.get("shipment_date")
-            if not shipment_date:
-                continue
-
-            # фильтр по shipment_date (как договорились)
-            if shipment_date < OZON_ORDERS_CUTOFF.isoformat().replace("+00:00", "Z"):
-                continue
 
             posting_number = (r.get("posting_number") or "").strip()
             status = (r.get("status") or "").strip().lower()
+            shipment_date = r.get("shipment_date")
             products = r.get("products") or []
 
-            if not posting_number or not status:
+            if not posting_number or not status or not shipment_date:
+                continue
+
+            # фильтр по shipment_date
+            if shipment_date < OZON_ORDERS_CUTOFF.isoformat().replace("+00:00", "Z"):
                 continue
 
             try:
                 order = co.upsert_from_ozon(
-                    order_number=posting_number,      # <-- ключ МС = posting_number (...-1)
+                    order_number=posting_number,      # ключ МС = posting_number
                     ozon_status=status,
                     shipment_date=shipment_date,
                     products=products,
@@ -96,18 +93,21 @@ def main() -> None:
             except Exception as e:
                 print(f"[{name}] SKIP posting {posting_number}: {e}")
                 continue
-                
-             if status == "delivering":
+
+            # delivering → создаём отгрузку (если нет)
+            if status == "delivering":
                 dem.create_from_customerorder_if_missing(
                     customerorder=order,
                     posting_number=posting_number,
                     sales_channel_id=channel_id,
                 )
 
+            # cancelled → снимаем резерв
             if status == "cancelled":
                 co.remove_reserve(order)
 
             print(f"[{name}] synced {posting_number} status={status}")
+
 
 if __name__ == "__main__":
     main()
