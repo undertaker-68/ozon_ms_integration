@@ -24,6 +24,7 @@ def main() -> None:
 
     ms = MoySkladClient(cfg.moysklad_token)
     co = CustomerOrderService(ms)
+    dem = DemandService(ms)
 
     accounts = [
         (
