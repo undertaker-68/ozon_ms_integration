@@ -24,6 +24,10 @@ class MoySkladClient:
             "Accept-Encoding": "gzip",
         }
 
+    def delete(self, path: str, params: dict | None = None, timeout: int = 60):
+        url = self._url(path)
+        return request_json("DELETE", url, headers=self.headers, params=params, timeout=timeout)
+
     # -------- Generic HTTP helpers (for orders sync) --------
     def _url(self, path_or_url: str) -> str:
         # allow passing full URL or "/entity/..."
