@@ -23,7 +23,7 @@ class AssortmentResolver:
             return self._cache[article]
 
         # Пробуем по сущностям, где article точно существует
-        entities = ["/entity/product", "/entity/variant", "/entity/bundle"]
+        entities = ["/entity/product", "/entity/bundle"]
 
         # В МС иногда для "числовых" артикулов лучше без кавычек
         filters = [f"article={article}", f'article="{article}"']
