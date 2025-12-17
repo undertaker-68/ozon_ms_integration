@@ -93,6 +93,12 @@ def main() -> None:
                 posting_number=r.get("posting_number"),
             )
 
+            try:
+                order = co.upsert_from_ozon(...)
+            except Exception as e:
+                print(f"[{name}] SKIP order {order_number}: {e}")
+                continue
+
             status = (status or "").strip().lower()
             pn = r.get("posting_number") or ""
 
