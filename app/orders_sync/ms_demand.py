@@ -207,8 +207,11 @@ class DemandService:
         try:
             created = self.ms.post("/entity/demand", json=payload)
         except HttpError as e:
+            http_status = getattr(e, "status_code", None) or getattr(e, "status", None) or getattr(e, "code", None)
+            body = getattr(e, "message", None) or getattr(e, "text", None) or str(e)
+
             # Нельзя отгрузить товар, которого нет на складе → просто пропускаем
-            if e.status_code == 412 and '"code" : 3007' in e.message:
+            if http_status == 412 and "3007" in body:
                 return None
             raise
 
