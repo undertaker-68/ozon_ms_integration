@@ -61,7 +61,7 @@ class CustomerOrderService:
             )
         return positions
 
-    def upsert_from_ozon(
+        def upsert_from_ozon(
         self,
         order_number: str,
         ozon_status: str,
@@ -70,35 +70,42 @@ class CustomerOrderService:
         sales_channel_id: str,
         posting_number: str | None = None,
     ) -> dict:
+        """
+        ВАЖНО: MS CustomerOrder.name = Ozon posting_number (например 57245188-0251-1)
+        order_number (например 57245188-0251) храним в externalCode для справки/поиска.
+        """
+
+        if not posting_number:
+            raise ValueError("posting_number is required (for MS order name)")
+
+        ms_name = str(posting_number).strip()  # <-- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+
+        ozon_status = (ozon_status or "").strip().lower()
         state_id = OZON_TO_MS_STATE.get(ozon_status)
         if not state_id:
             raise ValueError(f"Unknown ozon status: {ozon_status}")
 
-        existing = None
-        if posting_number:
-            existing = self.find_by_external_code(posting_number)
-        if not existing:
-            existing = self.find_by_name(order_number)
+        # Ищем заказ в МС по name == posting_number
+        existing = self.find_by_name(ms_name)
 
         # ======================================================
         # 1) ЗАКАЗА НЕТ → СОЗДАЁМ ПОЛНОСТЬЮ
         # ======================================================
         if not existing:
             payload: dict[str, Any] = {
-                "name": order_number,
-                "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
+                "name": ms_name,  # <-- posting_number
                 "organization": ms_meta("organization", MS_ORGANIZATION_ID),
+                "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
                 "store": ms_meta("store", MS_STORE_OZON_ID),
                 "state": ms_state_meta(state_id),
-                "moment": parse_dt(shipment_date),               # Дата заказа
+                "moment": parse_dt(shipment_date),
                 "shipmentPlannedMoment": parse_dt(shipment_date),
                 "salesChannel": ms_sales_channel_meta(sales_channel_id),
                 "positions": {"rows": self.build_positions(products)},
-                # "description": ""  # комментарий пока пустой
             }
 
-            if posting_number:
-                payload["externalCode"] = posting_number
+            # Сохраняем "короткий" order_number в externalCode (опционально, но полезно)
+            payload["externalCode"] = str(order_number).strip()
 
             return self.ms.post("/entity/customerorder", json=payload)
 
