@@ -38,14 +38,17 @@ class DemandService:
         if not demands:
             return None
 
-        # оставим самую раннюю по moment (или первую)
+        # Сортируем отгрузки по моменту (по времени)
         def key(d: dict):
             return d.get("moment") or ""
 
         demands_sorted = sorted(demands, key=key)
+
+        # Оставляем самую раннюю отгрузку
         keep = demands_sorted[0]
         extras = demands_sorted[1:]
 
+        # Удаляем лишние отгрузки
         for d in extras:
             did = d.get("id")
             if did:
@@ -72,11 +75,11 @@ class DemandService:
                 continue
 
             ass = self.ms.get(href)
-            from .assortment import extract_sale_price_cents
             price = extract_sale_price_cents(ass)
             if price <= 0:
                 continue
 
+            # обновляем позицию по meta.href
             rmeta = (r.get("meta") or {})
             rhref = rmeta.get("href")
             if not rhref:
