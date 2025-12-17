@@ -94,21 +94,18 @@ def main() -> None:
             )
 
             status = (status or "").strip().lower()
+            pn = r.get("posting_number") or ""
 
-            pn = r.get("posting_number")
-            
             if status == "delivering" and pn:
                 dem.create_from_customerorder_if_missing(
                     customerorder=order,
-                    posting_number=r.get("posting_number") or "",
+                    posting_number=pn,
                     sales_channel_id=channel_id,
                 )
 
             if status == "cancelled":
                 co.remove_reserve(order)
 
-            if status == "cancelled":
-                co.remove_reserve(order)
 
             print(f"[{name}] synced order {order_number} status={status}")
 
