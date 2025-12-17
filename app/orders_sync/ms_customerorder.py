@@ -124,7 +124,11 @@ class CustomerOrderService:
             json=patch,
         )
 
-    def remove_reserve(self, order: dict) -> dict:
+        def remove_reserve(self, order: dict) -> dict:
+        """
+        Снимаем резерв по всем позициям заказа.
+        Надёжно: если у позиции нет поля id, берём его из meta.href.
+        """
         order_id = order["id"]
 
         pos = self.ms.get(
@@ -133,7 +137,21 @@ class CustomerOrderService:
         )
         rows = pos.get("rows") or []
 
-        patch_rows = [{"id": r["id"], "reserve": 0} for r in rows]
+        def id_from_href(href: str) -> str | None:
+            # .../entity/customerorder/<order_id>/positions/<pos_id>
+            if not href:
+                return None
+            return href.rstrip("/").split("/")[-1]
+
+        patch_rows = []
+        for r in rows:
+            pid = r.get("id")
+            if not pid:
+                pid = id_from_href(((r.get("meta") or {}).get("href")) or "")
+            if not pid:
+                continue  # пропускаем битую строку, чтобы не валить весь заказ
+
+            patch_rows.append({"id": pid, "reserve": 0})
 
         if patch_rows:
             self.ms.put(
