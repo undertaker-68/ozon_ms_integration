@@ -24,6 +24,27 @@ class MoySkladClient:
             "Accept-Encoding": "gzip",
         }
 
+    # -------- Generic HTTP helpers (for orders sync) --------
+    def _url(self, path_or_url: str) -> str:
+        # allow passing full URL or "/entity/..."
+        if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+            return path_or_url
+        if not path_or_url.startswith("/"):
+            path_or_url = "/" + path_or_url
+        return f"{MS_BASE}{path_or_url}"
+
+    def get(self, path: str, params: dict | None = None, timeout: int = 60):
+        url = self._url(path)
+        return request_json("GET", url, headers=self.headers, params=params, timeout=timeout)
+
+    def post(self, path: str, json: dict | None = None, params: dict | None = None, timeout: int = 60):
+        url = self._url(path)
+        return request_json("POST", url, headers=self.headers, params=params, json_body=json, timeout=timeout)
+
+    def put(self, path: str, json: dict | None = None, params: dict | None = None, timeout: int = 60):
+        url = self._url(path)
+        return request_json("PUT", url, headers=self.headers, params=params, json_body=json, timeout=timeout)
+
     # -------- Stock report --------
     def get_stock_bystore(self) -> Dict[str, Any]:
         url = f"{MS_BASE}/report/stock/bystore"
