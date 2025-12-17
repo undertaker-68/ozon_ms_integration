@@ -96,11 +96,8 @@ def main() -> None:
             except Exception as e:
                 print(f"[{name}] SKIP posting {posting_number}: {e}")
                 continue
-
-            status = (status or "").strip().lower()
-            pn = r.get("posting_number") or ""
-
-                        if status == "delivering":
+                
+             if status == "delivering":
                 dem.create_from_customerorder_if_missing(
                     customerorder=order,
                     posting_number=posting_number,
