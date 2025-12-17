@@ -33,6 +33,14 @@ class CustomerOrderService:
         rows = resp.get("rows") or []
         return rows[0] if rows else None
 
+    def find_by_external_code(self, external_code: str) -> dict | None:
+        resp = self.ms.get(
+            "/entity/customerorder",
+            params={"filter": f'externalCode="{external_code}"', "limit": 1},
+        )
+        rows = resp.get("rows") or []
+        return rows[0] if rows else None
+
     # === используется ТОЛЬКО при создании заказа ===
     def build_positions(self, products: list[dict]) -> list[dict]:
         positions: list[dict] = []
@@ -66,7 +74,11 @@ class CustomerOrderService:
         if not state_id:
             raise ValueError(f"Unknown ozon status: {ozon_status}")
 
-        existing = self.find_by_name(order_number)
+        existing = None
+        if posting_number:
+            existing = self.find_by_external_code(posting_number)
+        if not existing:
+            existing = self.find_by_name(order_number)
 
         # ======================================================
         # 1) ЗАКАЗА НЕТ → СОЗДАЁМ ПОЛНОСТЬЮ
