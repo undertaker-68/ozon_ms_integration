@@ -115,3 +115,108 @@ class OzonClient:
             json_body=payload,
             timeout=60,
         )
+
+        def _to_ozon_ts(self, dt: Any) -> str:
+        """
+        Convert datetime/str to Ozon ISO8601 string with Z.
+        Accepts:
+          - datetime with/without tzinfo
+          - already ISO string
+        """
+        if dt is None:
+            raise ValueError("datetime is required")
+        if isinstance(dt, str):
+            return dt
+        # assume datetime
+        try:
+            import datetime as _dt
+            if isinstance(dt, _dt.datetime):
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_dt.timezone.utc)
+                s = dt.astimezone(_dt.timezone.utc).isoformat()
+                # Ozon examples use Z
+                return s.replace("+00:00", "Z")
+        except Exception:
+            pass
+        raise TypeError(f"Unsupported datetime type: {type(dt)}")
+
+    def fbs_list(
+        self,
+        date_from: Any,
+        date_to: Any,
+        statuses: List[str] | None = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns list of postings (short) for FBS.
+        Uses /v3/posting/fbs/list with offset/limit pagination.
+        """
+        url = f"{OZON_BASE}/v3/posting/fbs/list"
+
+        df = self._to_ozon_ts(date_from)
+        dt = self._to_ozon_ts(date_to)
+
+        offset = 0
+        out: List[Dict[str, Any]] = []
+
+        while True:
+            flt: Dict[str, Any] = {
+                "since": df,
+                "to": dt,
+            }
+            if statuses:
+                flt["status"] = statuses
+
+            body: Dict[str, Any] = {
+                "filter": flt,
+                "limit": int(limit),
+                "offset": int(offset),
+                # with/analytics/financial_data включаем только если реально нужно
+                # "with": {"analytics_data": True, "financial_data": True},
+            }
+
+            data = request_json(
+                "POST",
+                url,
+                headers=self._headers(),
+                json_body=body,
+                timeout=60,
+            )
+
+            result = data.get("result") or {}
+            postings = result.get("postings") or []
+            if postings:
+                out.extend(postings)
+
+            # Если вернулось меньше лимита — конец
+            if not postings or len(postings) < int(limit):
+                break
+
+            offset += int(limit)
+
+        return out
+
+    def fbs_get(self, posting_number: str) -> Dict[str, Any]:
+        """
+        Returns full posting details for a single FBS posting.
+        Uses /v3/posting/fbs/get
+        """
+        url = f"{OZON_BASE}/v3/posting/fbs/get"
+        body = {
+            "posting_number": posting_number,
+            # включаем всё полезное: товары/аналитика/финансы
+            "with": {
+                "analytics_data": True,
+                "barcodes": False,
+                "financial_data": True,
+                "translit": False,
+            },
+        }
+
+        return request_json(
+            "POST",
+            url,
+            headers=self._headers(),
+            json_body=body,
+            timeout=60,
+        )
