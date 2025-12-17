@@ -95,7 +95,9 @@ def main() -> None:
 
             status = (status or "").strip().lower()
 
-            if status == "delivering":
+            pn = r.get("posting_number")
+            
+            if status == "delivering" and pn:
                 dem.create_from_customerorder_if_missing(
                     customerorder=order,
                     posting_number=r.get("posting_number") or "",
