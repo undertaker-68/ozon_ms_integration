@@ -39,16 +39,18 @@ class DemandService:
         if existing:
             return existing
 
+        co_meta = customerorder.get("meta")
+        if not co_meta:
+            raise ValueError("customerorder.meta is missing (cannot create demand)")
+
         payload: Dict[str, Any] = {
             "externalCode": posting_number,
             "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
             "store": ms_meta("store", MS_STORE_OZON_ID),
             "organization": ms_meta("organization", MS_ORGANIZATION_ID),
-            "customerOrder": {"meta": customerorder["meta"]},
+            "customerOrder": {"meta": co_meta},
             "state": ms_demand_state_meta(demand_state_id),
             "salesChannel": ms_sales_channel_meta(sales_channel_id),
-            # комментарий пока пустой по твоему требованию
-            # "description": ""
         }
 
         return self.ms.post("/entity/demand", json=payload)
