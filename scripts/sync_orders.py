@@ -94,6 +94,8 @@ def main() -> None:
                 print(f"[{name}] SKIP posting {posting_number}: {e}")
                 continue
 
+            co.ensure_prices(order)
+
             # delivering → создаём отгрузку (если нет)
             if status == "delivering":
                 dem.create_from_customerorder_if_missing(
