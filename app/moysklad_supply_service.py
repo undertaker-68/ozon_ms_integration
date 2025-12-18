@@ -45,7 +45,7 @@ class MoySkladSupplyService:
         return {
             "Authorization": f"Bearer {self.ms_token}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json;charset=utf-8",
         }
 
     # -------- CustomerOrder --------
