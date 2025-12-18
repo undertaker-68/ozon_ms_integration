@@ -73,8 +73,23 @@ class MoySkladSupplyService:
         return request_json("PUT", url, headers=self._headers(), json_body=payload, timeout=60)
 
     def replace_customerorder_positions(self, customerorder_id: str, positions: List[Dict[str, Any]]) -> None:
-        url = f"{self.base}/entity/customerorder/{customerorder_id}/positions"
-        request_json("PUT", url, headers=self._headers(), json_body=positions, timeout=120)
+        list_url = f"{self.base}/entity/customerorder/{customerorder_id}/positions"
+
+        # GET existing
+        rep = request_json("GET", list_url, headers=self._headers(), params={"limit": 1000}, timeout=120)
+        rows = rep.get("rows") or []
+
+        # DELETE existing
+        for r in rows:
+            pid = r.get("id")
+            if not pid:
+                continue
+            del_url = f"{list_url}/{pid}"
+            request_json("DELETE", del_url, headers=self._headers(), timeout=60)
+
+        # POST new (ВАЖНО: массив!)
+        if positions:
+            request_json("POST", list_url, headers=self._headers(), json_body=positions, timeout=120)
 
     def set_customerorder_unconducted(self, customerorder_id: str) -> None:
         self.update_customerorder(customerorder_id, {"applicable": False})
@@ -123,8 +138,21 @@ class MoySkladSupplyService:
         return request_json("PUT", url, headers=self._headers(), json_body=payload, timeout=60)
 
     def replace_move_positions(self, move_id: str, positions: List[Dict[str, Any]]) -> None:
-        url = f"{self.base}/entity/move/{move_id}/positions"
-        request_json("PUT", url, headers=self._headers(), json_body=positions, timeout=120)
+        list_url = f"{self.base}/entity/move/{move_id}/positions"
+
+        rep = request_json("GET", list_url, headers=self._headers(), params={"limit": 1000}, timeout=120)
+        rows = rep.get("rows") or []
+
+        for r in rows:
+            pid = r.get("id")
+            if not pid:
+                continue
+            del_url = f"{list_url}/{pid}"
+            request_json("DELETE", del_url, headers=self._headers(), timeout=60)
+
+    if positions:
+        request_json("POST", list_url, headers=self._headers(), json_body=positions, timeout=120)
+
 
     def delete_move(self, move_id: str) -> None:
         url = f"{self.base}/entity/move/{move_id}"
