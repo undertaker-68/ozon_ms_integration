@@ -296,7 +296,7 @@ class MoySkladSupplyService:
                     }
                 )
 
-        self.replace_move_positions(mv["id"], move_positions)
+            self.replace_move_positions(mv["id"], move_positions)
         except Exception:
             self.set_customerorder_unconducted(co["id"])
             raise
