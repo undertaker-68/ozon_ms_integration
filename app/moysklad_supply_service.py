@@ -250,7 +250,7 @@ class MoySkladSupplyService:
             "targetStore": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_move_supply_id),
             "description": description,
-            "applicable": True,  # по умолчанию проведено
+            "applicable": False,  # по умолчанию не проведено
         }
 
         try:
