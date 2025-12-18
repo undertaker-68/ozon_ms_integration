@@ -108,10 +108,10 @@ def sync_fbo_supplies(
                         continue
 
             # отмена
-            state = core["state"]
             if state in STATE_CANCELLED:
-                if dry_run:
-                    print(f"[{c.cabinet.name}] {sn} DRYRUN: would delete move+customerorder (no demand)")
+                if dry_run or not allow_delete:
+                    mode = "DRYRUN" if dry_run else "SAFE"
+                    print(f"[{c.cabinet.name}] {sn} {mode}: would delete move+customerorder (no demand)")
                     continue
 
                 move = ms.find_move_by_external_code(sn)
