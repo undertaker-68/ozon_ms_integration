@@ -150,9 +150,8 @@ class MoySkladSupplyService:
             del_url = f"{list_url}/{pid}"
             request_json("DELETE", del_url, headers=self._headers(), timeout=60)
 
-    if positions:
-        request_json("POST", list_url, headers=self._headers(), json_body=positions, timeout=120)
-
+        if positions:
+            request_json("POST", list_url, headers=self._headers(), json_body=positions, timeout=120)
 
     def delete_move(self, move_id: str) -> None:
         url = f"{self.base}/entity/move/{move_id}"
