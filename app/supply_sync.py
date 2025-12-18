@@ -106,7 +106,9 @@ def sync_fbo_supplies(
                     if demands:
                         print(f"[{c.cabinet.name}] {sn} skip: demand exists")
                         continue
-
+            
+            state = core["state"]
+            
             # отмена
             if state in STATE_CANCELLED:
                 if dry_run or not allow_delete:
