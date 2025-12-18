@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import requests
+
 from app.config import load_config
 from app.moysklad_client import MoySkladClient
 from app.ozon_client import OzonClient, OzonCreds
@@ -96,18 +98,23 @@ def main() -> None:
 
             # подчистить дубли отгрузок по связанному заказу (если они уже есть)
             co.ensure_prices(order)
-            dem.ensure_single_demand_for_order(order)
+            try:
+                dem.ensure_single_demand_for_order(order)
+            except requests.exceptions.RequestException as e:
+                print(f"[{name}] WARN MS request failed (ensure_single_demand_for_order) {posting_number}: {e}")
 
             # delivering → создаём отгрузку (если нет)
             if status == "delivering":
-                demand = dem.create_from_customerorder_if_missing(
-                    customerorder=order,
-                    posting_number=posting_number,
-                    sales_channel_id=channel_id,
-                )
-
-                if demand is None:
-                    print(f"[{name}] SKIP demand for {posting_number}: no stock in MS")
+                try:
+                    demand = dem.create_from_customerorder_if_missing(
+                        customerorder=order,
+                        posting_number=posting_number,
+                        sales_channel_id=channel_id,
+                    )
+                    if demand is None:
+                        print(f"[{name}] SKIP demand for {posting_number}: no stock in MS")
+                    except requests.exceptions.RequestException as e:
+                        print(f"[{name}] WARN MS request failed (create demand) {posting_number}: {e}")
 
             # cancelled → снимаем резерв
             if status == "cancelled":
