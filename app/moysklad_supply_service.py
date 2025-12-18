@@ -184,7 +184,7 @@ class MoySkladSupplyService:
             price_value = self.get_sale_price_value(a)
             positions.append(
                 {
-                    "assortment": a["meta"],
+                    "assortment": {"meta": a["meta"]},
                     "quantity": qty,
                     "price": price_value,
                 }
