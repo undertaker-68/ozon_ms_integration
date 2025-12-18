@@ -57,6 +57,13 @@ class MoySkladSupplyService:
         rows = rep.get("rows") or []
         return rows[0] if rows else None
 
+    def find_demand_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
+        url = f"{self.base}/entity/demand"
+        params = {"filter": f'externalCode={external_code}'}
+        rep = request_json("GET", url, headers=self._headers(), params=params, timeout=60)
+        rows = rep.get("rows") or []
+        return rows[0] if rows else None
+
     def create_customerorder(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base}/entity/customerorder"
         return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=60)
