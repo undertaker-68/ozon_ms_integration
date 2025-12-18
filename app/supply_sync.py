@@ -76,7 +76,7 @@ def sync_fbo_supplies(
     dry_run: bool = True,
 ) -> None:
     created_from_dt = _parse_iso(created_from_iso)
-    allow_delete = os.environ.get("FBO_ALLOW_DELETE", "0").strip().lower() in ("1", "true", "yes")
+    allow_delete = os.environ.get("FBO_ALLOW_DELETE", "0").strip().lower() in ("1","true","yes")
 
     for c in cabinets:
         oz = OzonSupplyClient(c.cabinet)
