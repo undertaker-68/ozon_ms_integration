@@ -89,11 +89,11 @@ class MoySkladSupplyService:
         payload: Dict[str, Any] = {
             "externalCode": external_code,
             "customerOrder": customerorder_meta,
-            "organization": ms_meta("organization", self.cfg.organization_id)["meta"],
-            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id)["meta"],
-            "store": ms_meta("store", self.cfg.store_fbo_id)["meta"],
-            "state": ms_meta("state", self.cfg.state_demand_fbo_id)["meta"],
-            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id)["meta"],
+            "organization": ms_meta("organization", self.cfg.organization_id),
+            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
+            "store": ms_meta("store", self.cfg.store_fbo_id),
+            "state": ms_meta("state", self.cfg.state_demand_fbo_id),
+            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
             "description": description,
         }
         return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=60)
@@ -153,11 +153,11 @@ class MoySkladSupplyService:
 
         order_payload: Dict[str, Any] = {
             "externalCode": supply_number,
-            "organization": ms_meta("organization", self.cfg.organization_id)["meta"],
-            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id)["meta"],
-            "store": ms_meta("store", self.cfg.store_fbo_id)["meta"],
-            "state": ms_meta("state", self.cfg.state_customerorder_fbo_id)["meta"],
-            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id)["meta"],
+            "organization": ms_meta("organization", self.cfg.organization_id),
+            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
+            "store": ms_meta("store", self.cfg.store_fbo_id),
+            "state": ms_meta("state", self.cfg.state_customerorder_fbo_id),
+            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
             "shipmentPlannedMoment": shipment_planned_iso,
             "description": description,
             "applicable": True,
@@ -201,10 +201,10 @@ class MoySkladSupplyService:
         move = self.find_move_by_external_code(move_key)
         move_payload: Dict[str, Any] = {
             "externalCode": move_key,
-            "organization": ms_meta("organization", self.cfg.organization_id)["meta"],
-            "sourceStore": ms_meta("store", self.cfg.store_src_id)["meta"],
-            "targetStore": ms_meta("store", self.cfg.store_fbo_id)["meta"],
-            "state": ms_meta("state", self.cfg.state_move_supply_id)["meta"],
+            "organization": ms_meta("organization", self.cfg.organization_id),
+            "sourceStore": ms_meta("store", self.cfg.store_src_id),
+            "targetStore": ms_meta("store", self.cfg.store_fbo_id),
+            "state": ms_meta("state", self.cfg.state_move_supply_id),
             "description": description,
             "applicable": True,
         }
