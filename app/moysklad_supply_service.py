@@ -295,10 +295,16 @@ class MoySkladSupplyService:
                         "quantity": q,
                     }
                 )
-
+        try:
             self.replace_move_positions(mv["id"], move_positions)
-        except Exception:
-            self.set_customerorder_unconducted(co["id"])
+        except HttpError as e:
+            # 3007: нельзя переместить товар которого нет на складе
+            if e.status_code == 412 and '"code" : 3007' in (e.body or ""):
+                # снимаем проведение и пробуем ещё раз
+            self.update_move(mv["id"], {"applicable": False})
+            self.replace_move_positions(mv["id"], move_positions)
+            print(f"[{self.cfg.cabinet_name}] {external_code} move set unapplicable (no stock)")
+        else:
             raise
 
         return co
