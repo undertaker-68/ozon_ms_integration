@@ -98,15 +98,12 @@ def sync_fbo_supplies(
                 continue
 
             # если в МС уже есть заказ и у него есть demand — пропуск полностью
-            existing_co = ms.find_customerorder_by_external_code(sn)
-            if existing_co:
-                href = (existing_co.get("meta") or {}).get("href")
-                if href:
-                    demands = ms.list_demands_by_customerorder(href)
-                    if demands:
-                        print(f"[{c.cabinet.name}] {sn} skip: demand exists")
-                        continue
-            
+            # если отгрузка (Demand) уже есть — пропуск полностью
+            existing_d = ms.find_demand_by_external_code(sn)
+            if existing_d:
+                print(f"[{c.cabinet.name}] {sn} skip: demand exists")
+                continue
+
             state = core["state"]
             
             # отмена
