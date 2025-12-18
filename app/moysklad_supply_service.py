@@ -48,6 +48,10 @@ class MoySkladSupplyService:
             "Accept": "application/json;charset=utf-8",
         }
 
+    def get_bundle(self, bundle_id: str) -> Dict[str, Any]:
+        url = f"{self.base}/entity/bundle/{bundle_id}"
+        return request_json("GET", url, headers=self._headers(), timeout=60)
+
     # -------- CustomerOrder --------
 
     def find_customerorder_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
@@ -245,8 +249,54 @@ class MoySkladSupplyService:
 
         try:
             mv = self.update_move(move["id"], move_payload) if move else self.create_move(move_payload)
-            move_positions = [{"assortment": p["assortment"], "quantity": p["quantity"]} for p in positions]
-            self.replace_move_positions(mv["id"], move_positions)
+            # Move: комплекты (bundle) нельзя добавлять напрямую — разворачиваем в компоненты
+            move_positions: List[Dict[str, Any]] = []
+            agg: Dict[str, float] = {}  # href(meta) -> qty
+
+            for p in positions:
+                a_meta = (p.get("assortment") or {}).get("meta")  # {"href":..., "type":..., ...}
+                qty = float(p.get("quantity") or 0)
+                if not a_meta or qty <= 0:
+                    continue
+
+                a_type = (a_meta.get("type") or "").lower()
+                a_href = a_meta.get("href") or ""
+                a_id = a_href.rstrip("/").split("/")[-1] if a_href else ""
+
+                if a_type == "bundle" and a_id:
+                    b = self.get_bundle(a_id)
+                    comps = ((b.get("components") or {}).get("rows")) or []
+                    for c in comps:
+                        c_qty = float(c.get("quantity") or 0)
+                        c_ass = (((c.get("assortment") or {}).get("meta")) or {})
+                        c_href = c_ass.get("href")
+                        if not c_href or c_qty <= 0:
+                            continue
+                        agg[c_href] = agg.get(c_href, 0.0) + qty * c_qty
+                else:
+                    agg[a_href] = agg.get(a_href, 0.0) + qty
+
+            for href, q in agg.items():
+                if q <= 0:
+                    continue
+                # meta можно восстановить по href: type берем из href
+                # href вида .../entity/{type}/{id}
+                parts = href.rstrip("/").split("/")
+                ent_type = parts[-2]
+                move_positions.append(
+                    {
+                        "assortment": {
+                            "meta": {
+                                "href": href,
+                                "type": ent_type,
+                                "mediaType": "application/json",
+                            }
+                        },
+                        "quantity": q,
+                    }
+                )
+
+        self.replace_move_positions(mv["id"], move_positions)
         except Exception:
             self.set_customerorder_unconducted(co["id"])
             raise
