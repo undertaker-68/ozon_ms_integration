@@ -305,11 +305,11 @@ class MoySkladSupplyService:
             try:
                 self.replace_move_positions(mv["id"], move_positions)
             except HttpError as e:
-                status = getattr(e, "status_code", None)
                 txt = getattr(e, "body", None) or getattr(e, "text", None) or str(e)
-                if status == 412 and "3007" in txt:
-                    self.update_move(mv["id"], {"applicable": False})
-                    self.replace_move_positions(mv["id"], move_positions)
+                # 3007: нет товара на складе — просто оставляем перемещение непроведённым и идём дальше
+                if e.status_code == 412 and "3007" in txt:
+                    # можно оставить запись в лог
+                    print(f"[move] {supply_number}: not enough stock -> move left applicable=false, positions not applied")
                 else:
                     raise
 
