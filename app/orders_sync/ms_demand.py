@@ -35,6 +35,7 @@ class DemandService:
             resp = self.ms.get(
                 "/entity/demand",
                 params={"filter": f'customerOrder={co_href}', "limit": 100},
+                timeout=120,
             )
             return resp.get("rows") or []
         except HttpError:
@@ -45,6 +46,7 @@ class DemandService:
             resp = self.ms.get(
                 "/entity/demand",
                 params={"filter": f'customerOrder="{co_href}"', "limit": 100},
+                timeout=120,
             )
             return resp.get("rows") or []
         except HttpError:
