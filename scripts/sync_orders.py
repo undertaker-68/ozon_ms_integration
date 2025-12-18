@@ -113,8 +113,8 @@ def main() -> None:
                     )
                     if demand is None:
                         print(f"[{name}] SKIP demand for {posting_number}: no stock in MS")
-                    except requests.exceptions.RequestException as e:
-                        print(f"[{name}] WARN MS request failed (create demand) {posting_number}: {e}")
+                except requests.exceptions.RequestException as e:
+                    print(f"[{name}] WARN MS request failed (create demand) {posting_number}: {e}")
 
             # cancelled → снимаем резерв
             if status == "cancelled":
