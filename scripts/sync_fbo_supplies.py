@@ -50,7 +50,6 @@ def main() -> None:
         state_move_supply_id=state_move_supply_id,
         state_demand_fbo_id=state_demand_fbo_id,
         sales_channel_id="fede2826-9fd0-11ee-0a80-0641000f3d25",
-        set_move_external_code=True,
     )
     ms_cfg_2 = MsFboConfig(
         organization_id=organization_id,
@@ -61,7 +60,6 @@ def main() -> None:
         state_move_supply_id=state_move_supply_id,
         state_demand_fbo_id=state_demand_fbo_id,
         sales_channel_id="ff2827b8-9fd0-11ee-0a80-0641000f3d31",
-        set_move_external_code=True,
     )
 
     dry_run = _env_bool("FBO_DRY_RUN", "1")
