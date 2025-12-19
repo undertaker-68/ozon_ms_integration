@@ -1,55 +1,84 @@
+cat > /root/ozon_ms_integration/app/http.py <<'PY'
+from __future__ import annotations
+
+import json
 import time
-import requests
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import requests
+
+
+@dataclass
 class HttpError(RuntimeError):
-    def __init__(self, status: int, text: str, url: str):
-        super().__init__(f"HTTP {status} for {url}: {text[:500]}")
-        self.status = status
-        self.text = text
-        self.url = url
+    status_code: int
+    text: str
+    url: str
+
+    def __str__(self) -> str:
+        return f"HTTP {self.status_code} for {self.url}: {self.text}"
+
+
+# Один Session на весь процесс = меньше SSL handshakes, лучше keep-alive
+_SESSION = requests.Session()
+
 
 def request_json(
     method: str,
     url: str,
-    headers: Dict[str, str],
+    *,
+    headers: Optional[Dict[str, str]] = None,
     params: Optional[Dict[str, Any]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
+    json_body: Any = None,
     timeout: int = 60,
-    max_retries: int = 6,
-) -> Dict[str, Any]:
-    # ВАЖНО: игнорируем proxy из окружения
-    s = requests.Session()
-    s.trust_env = False
+    retries: int = 4,
+    backoff: float = 2.0,
+) -> Any:
+    """
+    Универсальный запрос с ретраями.
+    Ловим сетевые/таймаутные ошибки, которые часто бывают у api.moysklad.ru.
+    """
+    last_exc: Optional[BaseException] = None
 
-    for attempt in range(max_retries + 1):
-        r = s.request(
-            method=method,
-            url=url,
-            headers=headers,
-            params=params,
-            json=json_body,
-            timeout=timeout,
-        )
+    for attempt in range(1, retries + 1):
+        try:
+            r = _SESSION.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=timeout,
+            )
 
-        # Retry on rate limit / temporary errors
-        if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
-            ra = r.headers.get("Retry-After")
-            if ra and ra.isdigit():
-                sleep_s = int(ra)
-            else:
-                # exponential backoff: 1,2,4,8... with small cap
-                sleep_s = min(20, 2 ** attempt)
+            if r.status_code >= 400:
+                raise HttpError(r.status_code, r.text, url)
+
+            # иногда API может вернуть пустое тело на DELETE
+            if not r.text:
+                return {}
+
+            try:
+                return r.json()
+            except json.JSONDecodeError:
+                # если вдруг пришло не-json
+                return r.text
+
+        except (requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.SSLError) as e:
+            last_exc = e
+            if attempt >= retries:
+                raise
+
+            # backoff: 2s, 4s, 8s ...
+            sleep_s = backoff ** (attempt - 1)
+            print(f"[http] retry {attempt}/{retries} {method} {url} due to {type(e).__name__} (sleep {sleep_s:.0f}s)")
             time.sleep(sleep_s)
-            continue
 
-        if r.status_code >= 400:
-            raise HttpError(r.status_code, r.text, url)
-
-        if not r.text.strip():
-            return {}
-
-        return r.json()
-
-    # theoretically unreachable
-    raise HttpError(599, "Max retries exceeded", url)
+    # на практике не дойдёт, но пусть будет
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("request_json failed without exception")
+PY
