@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -36,6 +35,7 @@ class CabinetRuntime:
 
 def _parse_iso(dt: str) -> datetime:
     # Ozon приходит с Z
+    dt = (dt or "").strip()
     if dt.endswith("Z"):
         dt = dt[:-1] + "+00:00"
     return datetime.fromisoformat(dt).astimezone(timezone.utc)
@@ -72,11 +72,11 @@ def sync_fbo_supplies(
     *,
     ms_token: str,
     cabinets: List[CabinetRuntime],
-    created_from_iso: str,
+    created_from_iso: str,  # теперь это порог по planned_from (timeslot.from), чтобы не ломать scripts/*
     dry_run: bool = True,
 ) -> None:
-    created_from_dt = _parse_iso(created_from_iso)
-    allow_delete = os.environ.get("FBO_ALLOW_DELETE", "0").strip().lower() in ("1","true","yes")
+    planned_from_dt = _parse_iso(created_from_iso)
+    allow_delete = os.environ.get("FBO_ALLOW_DELETE", "0").strip().lower() in ("1", "true", "yes")
 
     for c in cabinets:
         oz = OzonSupplyClient(c.cabinet)
@@ -90,22 +90,25 @@ def sync_fbo_supplies(
             if not sn:
                 continue
 
-            # фильтр по created_date
-            cd = core["created_date"]
-            if not cd:
+            # ФИЛЬТР ПО ПЛАНОВОЙ ДАТЕ ОТГРУЗКИ (timeslot.from), а не по created_date
+            pf = core["planned_from"]
+            if not pf:
                 continue
-            if _parse_iso(cd) < created_from_dt:
+            if _parse_iso(pf) < planned_from_dt:
                 continue
 
             # если в МС уже есть заказ и у него есть demand — пропуск полностью
-            # если отгрузка (Demand) уже есть — пропуск полностью
-            existing_d = ms.find_demand_by_external_code(sn)
-            if existing_d:
-                print(f"[{c.cabinet.name}] {sn} skip: demand exists")
-                continue
+            existing_co = ms.find_customerorder_by_external_code(sn)
+            if existing_co:
+                href = (existing_co.get("meta") or {}).get("href")
+                if href:
+                    demands = ms.list_demands_by_customerorder(href)
+                    if demands:
+                        print(f"[{c.cabinet.name}] {sn} skip: demand exists")
+                        continue
 
             state = core["state"]
-            
+
             # отмена
             if state in STATE_CANCELLED:
                 if dry_run or not allow_delete:
