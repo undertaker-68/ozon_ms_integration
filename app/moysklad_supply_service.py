@@ -3,8 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime, timezone
+
 from app.http import request_json, HttpError
 
+def ms_moment_from_iso(iso: str) -> str:
+    s = (iso or "").strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s).astimezone(timezone.utc)
+    # MoySklad moment отлично принимает с +0000
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+0000"
 
 def ms_meta(entity: str, uuid: str) -> Dict[str, Any]:
     return {
@@ -195,12 +204,13 @@ class MoySkladSupplyService:
 
         order_payload: Dict[str, Any] = {
             "externalCode": supply_number,
+            "name": supply_number,
             "organization": ms_meta("organization", self.cfg.organization_id),
             "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
             "store": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_customerorder_fbo_id),
             "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
-            "shipmentPlannedMoment": shipment_planned_iso,
+            "shipmentPlannedMoment": ms_moment_from_iso(shipment_planned_iso),
             "description": description,
             "applicable": True,
         }
