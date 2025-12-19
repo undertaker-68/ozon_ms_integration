@@ -72,7 +72,7 @@ def main() -> None:
             CabinetRuntime(cabinet=cab1, ms_cfg=ms_cfg_1),
             CabinetRuntime(cabinet=cab2, ms_cfg=ms_cfg_2),
         ],
-        created_from_iso="2025-12-09T00:00:00Z",
+        created_from_iso="2025-12-03T00:00:00Z",
         dry_run=dry_run,
     )
 
