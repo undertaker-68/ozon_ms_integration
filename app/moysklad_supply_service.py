@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from datetime import datetime, timezone
 
 from app.http import request_json, HttpError
 
+
 def ms_moment_from_iso(iso: str) -> str:
     s = (iso or "").strip()
+    if not s:
+        return ""
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s).astimezone(timezone.utc)
-    # MoySklad moment отлично принимает с +0000
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+0000"
+
 
 def ms_meta(entity: str, uuid: str) -> Dict[str, Any]:
     return {
@@ -40,7 +43,7 @@ class MsFboConfig:
     sales_channel_id: str  # кабинет-зависимый
 
     # Политики
-    set_move_external_code: bool = True  # важно для стабильного апдейта
+    set_move_external_code: bool = True
     prices_without_vat: bool = True
 
 
@@ -49,6 +52,9 @@ class MoySkladSupplyService:
         self.ms_token = ms_token
         self.cfg = cfg
         self.base = "https://api.moysklad.ru/api/remap/1.2"
+
+        # cache: article -> (assortment_dict or None)
+        self._assort_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -82,7 +88,7 @@ class MoySkladSupplyService:
 
     def replace_customerorder_positions(self, customerorder_id: str, positions: List[Dict[str, Any]]) -> None:
         """
-        В вашем МС POST позиций принимает МАССИВ (мы проверили).
+        В вашем МС POST позиций принимает МАССИВ.
         PUT на коллекцию позиций требует id, поэтому делаем: GET -> DELETE -> POST.
         """
         list_url = f"{self.base}/entity/customerorder/{customerorder_id}/positions"
@@ -126,7 +132,7 @@ class MoySkladSupplyService:
         url = f"{self.base}/entity/demand"
         payload: Dict[str, Any] = {
             "externalCode": external_code,
-            "customerOrder": customerorder_meta,  # {"meta": {...}}
+            "customerOrder": customerorder_meta,
             "organization": ms_meta("organization", self.cfg.organization_id),
             "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
             "store": ms_meta("store", self.cfg.store_fbo_id),
@@ -134,7 +140,6 @@ class MoySkladSupplyService:
             "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
             "description": description,
         }
-        # можно увеличить timeout, если нужно (у тебя были таймауты)
         return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=180)
 
     # -------- Move --------
@@ -177,16 +182,35 @@ class MoySkladSupplyService:
     # -------- Assortment + Price --------
 
     def find_assortment_by_article(self, article: str) -> Optional[Dict[str, Any]]:
+        article = (article or "").strip()
+        if not article:
+            return None
+
+        if article in self._assort_cache:
+            return self._assort_cache[article]
+
         url = f"{self.base}/entity/assortment"
         params = {"filter": f"article={article}"}
         rep = request_json("GET", url, headers=self._headers(), params=params, timeout=60)
         rows = rep.get("rows") or []
-        return rows[0] if rows else None
+        a = rows[0] if rows else None
+        self._assort_cache[article] = a
+        return a
 
-    def get_sale_price_value(self, assortment: Dict[str, Any]) -> int:
+    def _pick_sale_price_value(self, assortment: Dict[str, Any]) -> int:
+        """
+        Берём 'Цена продажи' если найдём по имени, иначе первый salePrices.
+        """
         sale_prices = assortment.get("salePrices") or []
         if not sale_prices:
             return 0
+
+        for sp in sale_prices:
+            pt = sp.get("priceType") or {}
+            name = (pt.get("name") or "").strip().lower()
+            if name == "цена продажи" or name == "sale price":
+                return int(sp.get("value") or 0)
+
         return int(sale_prices[0].get("value") or 0)
 
     # -------- High level --------
@@ -197,62 +221,49 @@ class MoySkladSupplyService:
         supply_number: str,
         shipment_planned_iso: str,
         description: str,
-        items: List[Dict[str, Any]],  # items from Ozon bundle: offer_id, quantity
+        items: List[Dict[str, Any]],
         dry_run: bool = False,
     ) -> Dict[str, Any]:
+        """
+        Гарантии:
+        - CustomerOrder: externalCode = supply_number, name = supply_number
+        - CustomerOrder.shipmentPlannedMoment проставляем корректным форматом (если дата есть)
+        - Move создаём ВСЕГДА (даже если позиций нет / товары не найдены)
+        - Если что-то ломается на позициях — снимаем applicable у заказа (по ТЗ)
+        """
+        supply_number = str(supply_number or "").strip()
         existing = self.find_customerorder_by_external_code(supply_number)
+
+        shipment_moment = ms_moment_from_iso(shipment_planned_iso)
 
         order_payload: Dict[str, Any] = {
             "externalCode": supply_number,
-            "name": supply_number,
+            "name": supply_number,  # ВАЖНО: номер заказа в МС = номер поставки
             "organization": ms_meta("organization", self.cfg.organization_id),
             "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
             "store": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_customerorder_fbo_id),
             "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
-            "shipmentPlannedMoment": ms_moment_from_iso(shipment_planned_iso),
             "description": description,
             "applicable": True,
         }
+        if shipment_moment:
+            order_payload["shipmentPlannedMoment"] = shipment_moment
 
         if dry_run:
             co = existing or {"id": "DRYRUN", "meta": {"href": "DRYRUN"}}
-        else:
-            if existing:
-                co = self.update_customerorder(existing["id"], order_payload)
-            else:
-                co = self.create_customerorder(order_payload)
-
-        # ---- positions for CustomerOrder (bundles allowed) ----
-        positions: List[Dict[str, Any]] = []
-        for it in items:
-            offer_id = str(it.get("offer_id") or "").strip()
-            qty = float(it.get("quantity") or 0)
-            if not offer_id or qty <= 0:
-                continue
-
-            a = self.find_assortment_by_article(offer_id)
-            if not a:
-                continue  # по ТЗ: если не найден — пропускаем
-
-            price_value = self.get_sale_price_value(a)
-            positions.append(
-                {
-                    "assortment": {"meta": a["meta"]},
-                    "quantity": qty,
-                    "price": price_value,
-                }
-            )
-
-        if not dry_run:
-            self.replace_customerorder_positions(co["id"], positions)
-
-        # ---- Move ----
-        move_key = supply_number
-        if dry_run:
             return co
 
+        # 1) Сначала создаём/обновляем заказ (без позиций)
+        if existing:
+            co = self.update_customerorder(existing["id"], order_payload)
+        else:
+            co = self.create_customerorder(order_payload)
+
+        # 2) Сразу создаём/обновляем Move (чтобы он был даже если позиции не запишутся)
+        move_key = supply_number
         move = self.find_move_by_external_code(move_key)
+
         move_payload: Dict[str, Any] = {
             "externalCode": move_key,
             "organization": ms_meta("organization", self.cfg.organization_id),
@@ -260,18 +271,41 @@ class MoySkladSupplyService:
             "targetStore": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_move_supply_id),
             "description": description,
-            "applicable": False,  # по умолчанию не проведено
+            "applicable": False,  # всегда НЕ проведено, чтобы не упираться в остатки
         }
 
+        mv = self.update_move(move["id"], move_payload) if move else self.create_move(move_payload)
+
+        # 3) Теперь собираем позиции. Если на этом этапе будет ошибка — Move уже существует.
         try:
-            mv = self.update_move(move["id"], move_payload) if move else self.create_move(move_payload)
+            # ---- positions for CustomerOrder (bundles allowed) ----
+            positions: List[Dict[str, Any]] = []
+            for it in items:
+                offer_id = str(it.get("offer_id") or "").strip()
+                qty = float(it.get("quantity") or 0)
+                if not offer_id or qty <= 0:
+                    continue
 
-            # Move: bundle запрещён — разворачиваем в компоненты
-            move_positions: List[Dict[str, Any]] = []
-            agg: Dict[str, float] = {}  # href -> qty
+                a = self.find_assortment_by_article(offer_id)
+                if not a:
+                    continue  # по ТЗ: если не найден — пропуск
 
+                price_value = self._pick_sale_price_value(a)
+                positions.append(
+                    {
+                        "assortment": {"meta": a["meta"]},
+                        "quantity": qty,
+                        "price": price_value,
+                    }
+                )
+
+            self.replace_customerorder_positions(co["id"], positions)
+
+            # ---- Move positions (bundle запрещён — разворачиваем в компоненты) ----
+            # Если позиций нет — просто оставим Move пустым (но он уже создан)
+            agg: Dict[str, float] = {}
             for p in positions:
-                a_meta = (p.get("assortment") or {}).get("meta")
+                a_meta = (p.get("assortment") or {}).get("meta") or {}
                 qty = float(p.get("quantity") or 0)
                 if not a_meta or qty <= 0:
                     continue
@@ -291,8 +325,10 @@ class MoySkladSupplyService:
                             continue
                         agg[c_href] = agg.get(c_href, 0.0) + qty * c_qty
                 else:
-                    agg[a_href] = agg.get(a_href, 0.0) + qty
+                    if a_href:
+                        agg[a_href] = agg.get(a_href, 0.0) + qty
 
+            move_positions: List[Dict[str, Any]] = []
             for href, q in agg.items():
                 if q <= 0:
                     continue
@@ -311,20 +347,18 @@ class MoySkladSupplyService:
                     }
                 )
 
-            # 3007: нет товара на складе → делаем move НЕ проведённым
             try:
                 self.replace_move_positions(mv["id"], move_positions)
             except HttpError as e:
                 txt = getattr(e, "body", None) or getattr(e, "text", None) or str(e)
-                # 3007: нет товара на складе — просто оставляем перемещение непроведённым и идём дальше
                 if e.status_code == 412 and "3007" in txt:
-                    # можно оставить запись в лог
+                    # нет товара на складе — оставляем move applicable=false и не падаем
                     print(f"[move] {supply_number}: not enough stock -> move left applicable=false, positions not applied")
                 else:
                     raise
 
         except Exception:
-            # по ТЗ: если перемещение не удается создать/обновить — снимаем проведение заказа
+            # по ТЗ: если перемещение/позиции не удаётся создать — снимаем проведение заказа
             self.set_customerorder_unconducted(co["id"])
             raise
 
