@@ -1,4 +1,3 @@
-cat > /root/ozon_ms_integration/app/http.py <<'PY'
 from __future__ import annotations
 
 import json
@@ -81,4 +80,3 @@ def request_json(
     if last_exc:
         raise last_exc
     raise RuntimeError("request_json failed without exception")
-PY
