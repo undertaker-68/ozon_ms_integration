@@ -50,6 +50,31 @@ def request_json(
                 timeout=timeout,
             )
 
+            # 429 / rate limit: подождать и повторить
+            if r.status_code == 429:
+                if attempt >= retries:
+                    raise HttpError(r.status_code, r.text, url)
+
+                ra = r.headers.get("Retry-After")
+                try:
+                    retry_after = int(ra) if ra else 5
+                except ValueError:
+                    retry_after = 5
+
+                sleep_s = max(retry_after, backoff ** (attempt - 1))
+                print(f"[http] rate-limit 429 for {method} {url} (sleep {sleep_s}s)")
+                time.sleep(sleep_s)
+                continue
+
+            # временные ошибки сервера — тоже ретраим
+            if r.status_code in (502, 503, 504):
+                if attempt >= retries:
+                    raise HttpError(r.status_code, r.text, url)
+                sleep_s = backoff ** (attempt - 1)
+                print(f"[http] server {r.status_code} for {method} {url} (sleep {sleep_s:.0f}s)")
+                time.sleep(sleep_s)
+                continue
+
             if r.status_code >= 400:
                 raise HttpError(r.status_code, r.text, url)
 
