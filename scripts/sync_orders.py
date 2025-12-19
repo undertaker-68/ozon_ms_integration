@@ -16,10 +16,10 @@ from app.orders_sync.constants import (
 from app.orders_sync.ms_customerorder import CustomerOrderService
 from app.orders_sync.ms_demand import DemandService
 
+SHIPMENT_DATE_FROM = datetime(2025, 12, 3, tzinfo=timezone.utc)  # 03.12.2025 включительно
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
-
 
 def main() -> None:
     cfg = load_config()
@@ -79,8 +79,13 @@ def main() -> None:
             if not posting_number or not status or not shipment_date:
                 continue
 
-            # фильтр по shipment_date
-            if shipment_date < OZON_ORDERS_CUTOFF.isoformat().replace("+00:00", "Z"):
+            # фильтр по дате отгрузки (shipment_date) — берём только с 03.12.2025 включительно
+            try:
+                sd = datetime.fromisoformat(shipment_date.replace("Z", "+00:00"))
+            except Exception:
+                continue
+
+            if sd < SHIPMENT_DATE_FROM:
                 continue
 
             try:
