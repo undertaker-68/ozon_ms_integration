@@ -1,78 +1,57 @@
-from __future__ import annotations
-
 import os
 
-from app.supply_sync import sync_fbo_supplies, CabinetRuntime
-from app.ozon_supply_client import OzonCabinet
-from app.moysklad_supply_service import MsFboConfig
-
-
-def _env_bool(name: str, default: str = "1") -> bool:
-    v = os.environ.get(name, default).strip().lower()
-    return v in ("1", "true", "yes", "y", "on")
+from app.supply_sync import sync_fbo_supplies, Cabinet, CabinetRuntime
+from app.ozon_client import OzonClient
+from app.moysklad_supply_service import MoySkladSupplyService, MsFboConfig
 
 
 def main() -> None:
     ms_token = os.environ["MOYSKLAD_TOKEN"]
 
-    # из твоих данных (фикс)
-    store_src_id = "7cdb9b20-9910-11ec-0a80-08670002d998"
-    store_fbo_id = "77b4a517-3b82-11f0-0a80-18cb00037a24"
-    state_customerorder_fbo_id = "921c872f-d54e-11ef-0a80-1823001350aa"
-    state_move_supply_id = "b0d2c89d-5c7c-11ef-0a80-0cd4001f5885"
-    state_demand_fbo_id = "b543e330-44e4-11f0-0a80-0da5002260ab"
+    # MS IDs (из твоих сообщений)
+    cfg = MsFboConfig(
+        organization_id=os.environ["MOYSKLAD_ORG_ID"],
+        counterparty_ozon_id=os.environ["MOYSKLAD_OZON_COUNTERPARTY_ID"],
+        store_src_id="7cdb9b20-9910-11ec-0a80-08670002d998",        # СКЛАД
+        store_fbo_id="77b4a517-3b82-11f0-0a80-18cb00037a24",        # FBO
+        state_customerorder_fbo_id="921c872f-d54e-11ef-0a80-1823001350aa",
+        state_move_supply_id="b0d2c89d-5c7c-11ef-0a80-0cd4001f5885",
+        state_demand_fbo_id="b543e330-44e4-11f0-0a80-0da5002260ab",
+        sales_channel_id="fede2826-9fd0-11ee-0a80-0641000f3d25",    # будет переопределяться на кабинетный
+    )
 
-    # эти у вас уже есть/должны быть (как в FBS)
-    organization_id = os.environ["MS_ORGANIZATION_ID"]
-    counterparty_ozon_id = os.environ["MS_COUNTERPARTY_OZON_ID"]
+    ms = MoySkladSupplyService(ms_token=ms_token, cfg=cfg)
 
-    base_url = os.environ.get("OZON_BASE_URL", "https://api-seller.ozon.ru")
-
-    cab1 = OzonCabinet(
+    # Кабинеты + их salesChannelId (МС)
+    cab1 = Cabinet(
         name="ozon1",
-        base_url=base_url,
-        api_key=os.environ["OZON1_API_KEY"],
-        client_id=os.environ["OZON1_CLIENT_ID"],
-    )
-    cab2 = OzonCabinet(
-        name="ozon2",
-        base_url=base_url,
-        api_key=os.environ["OZON2_API_KEY"],
-        client_id=os.environ["OZON2_CLIENT_ID"],
-    )
-
-    ms_cfg_1 = MsFboConfig(
-        organization_id=organization_id,
-        counterparty_ozon_id=counterparty_ozon_id,
-        store_src_id=store_src_id,
-        store_fbo_id=store_fbo_id,
-        state_customerorder_fbo_id=state_customerorder_fbo_id,
-        state_move_supply_id=state_move_supply_id,
-        state_demand_fbo_id=state_demand_fbo_id,
+        client_id_env="OZON1_CLIENT_ID",
+        api_key_env="OZON1_API_KEY",
         sales_channel_id="fede2826-9fd0-11ee-0a80-0641000f3d25",
     )
-    ms_cfg_2 = MsFboConfig(
-        organization_id=organization_id,
-        counterparty_ozon_id=counterparty_ozon_id,
-        store_src_id=store_src_id,
-        store_fbo_id=store_fbo_id,
-        state_customerorder_fbo_id=state_customerorder_fbo_id,
-        state_move_supply_id=state_move_supply_id,
-        state_demand_fbo_id=state_demand_fbo_id,
+    cab2 = Cabinet(
+        name="ozon2",
+        client_id_env="OZON2_CLIENT_ID",
+        api_key_env="OZON2_API_KEY",
         sales_channel_id="ff2827b8-9fd0-11ee-0a80-0641000f3d31",
     )
 
-    dry_run = _env_bool("FBO_DRY_RUN", "1")
+    cabinets = []
+    for cab in (cab1, cab2):
+        client_id = os.environ.get(cab.client_id_env, "").strip()
+        api_key = os.environ.get(cab.api_key_env, "").strip()
+        if not client_id or not api_key:
+            print(f"[{cab.name}] skip: missing env {cab.client_id_env}/{cab.api_key_env}")
+            continue
 
-    sync_fbo_supplies(
-        ms_token=ms_token,
-        cabinets=[
-            CabinetRuntime(cabinet=cab1, ms_cfg=ms_cfg_1),
-            CabinetRuntime(cabinet=cab2, ms_cfg=ms_cfg_2),
-        ],
-        created_from_iso="2025-12-03T00:00:00Z",
-        dry_run=dry_run,
-    )
+        oz = OzonClient(client_id=client_id, api_key=api_key)
+        cabinets.append(CabinetRuntime(cabinet=cab, ozon=oz))
+
+    if not cabinets:
+        print("No cabinets configured (missing OZON*_CLIENT_ID/OZON*_API_KEY).")
+        return
+
+    sync_fbo_supplies(ms=ms, cabinets=cabinets)
 
 
 if __name__ == "__main__":
