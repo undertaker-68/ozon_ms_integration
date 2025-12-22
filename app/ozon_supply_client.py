@@ -95,15 +95,64 @@ class OzonSupplyClient:
 
         return out
 
-    def iter_bundle_items(self, *, bundle_id: str) -> List[Dict[str, Any]]:
+    # ----------------- IMPORTANT FOR пункт 3 -----------------
+
+    def iter_bundle_items(self, bundle_id: str) -> List[Dict[str, Any]]:
+        """
+        Ozon: /v1/supply-order/bundle
+        Возвращает позиции внутри bundle_id.
+
+        На выходе даем список raw items, дальше нормализуем в get_supply_order_items.
+        """
+        bundle_id = (bundle_id or "").strip()
+        if not bundle_id:
+            return []
+
         out: List[Dict[str, Any]] = []
         last_id = ""
         while True:
             rep = self.supply_order_bundle(bundle_ids=[bundle_id], limit=100, last_id=last_id)
-            out.extend(rep.get("items") or [])
-            if not rep.get("has_next"):
+
+            # у Озона встречались разные ключи, поэтому страхуемся
+            items = rep.get("items") or rep.get("rows") or rep.get("result") or []
+            if isinstance(items, dict):
+                # иногда result может быть объектом
+                items = items.get("items") or []
+
+            if items:
+                out.extend(items)
+
+            new_last_id = rep.get("last_id") or ""
+            if not new_last_id or new_last_id == last_id:
                 break
-            last_id = str(rep.get("last_id") or "")
-            if not last_id:
-                break
+            last_id = new_last_id
+
         return out
+
+    def get_supply_order_items(self, order: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Нормализуем позиции поставки к виду:
+        [{"offer_id": "...", "quantity": N}, ...]
+
+        Берем bundle_id из order.supplies[0].bundle_id
+        """
+        supplies = order.get("supplies") or []
+        s0 = supplies[0] if supplies else {}
+        bundle_id = str(s0.get("bundle_id") or "").strip()
+        if not bundle_id:
+            return []
+
+        raw = self.iter_bundle_items(bundle_id)
+
+        items: List[Dict[str, Any]] = []
+        for it in raw:
+            offer_id = str(it.get("offer_id") or it.get("offerId") or "").strip()
+            qty = it.get("quantity") or it.get("qty") or 0
+            try:
+                qty_f = float(qty)
+            except Exception:
+                qty_f = 0.0
+            if offer_id and qty_f > 0:
+                items.append({"offer_id": offer_id, "quantity": qty_f})
+
+        return items
