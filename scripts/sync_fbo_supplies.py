@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 
 from app.supply_sync import sync_fbo_supplies, CabinetRuntime
-from app.ozon_supply_client import OzonCabinet
-from app.moysklad_supply_service import MsFboConfig
+from app.ozon_supply_client import OzonCabinet, OzonSupplyClient
+from app.moysklad_supply_service import MsFboConfig, MoySkladSupplyService
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -15,41 +15,40 @@ def _env(name: str, default: str | None = None) -> str:
 
 
 def main() -> None:
-    # Токен МС (у тебя он точно есть)
+    # MS token
     ms_token = _env("MOYSKLAD_TOKEN")
 
-    base_url = os.environ.get("OZON_BASE_URL", "https://api-seller.ozon.ru").strip()
+    # MS: org + counterparty
+    organization_id = _env("MS_ORGANIZATION_ID", os.environ.get("MOYSKLAD_ORG_ID"))
+    counterparty_ozon_id = _env("MS_COUNTERPARTY_OZON_ID", os.environ.get("MOYSKLAD_OZON_COUNTERPARTY_ID"))
 
-    # MS IDs (общее)
-    organization_id = os.environ.get("MS_ORGANIZATION_ID") or os.environ.get("MOYSKLAD_ORG_ID")
-    counterparty_ozon_id = os.environ.get("MS_COUNTERPARTY_OZON_ID") or os.environ.get("MOYSKLAD_OZON_COUNTERPARTY_ID")
-    if not organization_id:
-        raise KeyError("MS_ORGANIZATION_ID (или MOYSKLAD_ORG_ID)")
-    if not counterparty_ozon_id:
-        raise KeyError("MS_COUNTERPARTY_OZON_ID (или MOYSKLAD_OZON_COUNTERPARTY_ID)")
+    # Склады (если нет MS_STORE_SRC_ID/MS_STORE_FBO_ID — берём известные)
+    # источник (СКЛАД)
+    store_src_id = os.environ.get("MS_STORE_SRC_ID") or os.environ.get("MOYSKLAD_STORE_ID") or "7cdb9b20-9910-11ec-0a80-08670002d998"
+    store_src_id = str(store_src_id).strip()
 
-    # Склады:
-    # - источник: MS_STORE_SRC_ID (если нет — попробуем MOYSKLAD_STORE_ID как fallback)
-    # - FBO: MS_STORE_FBO_ID (обязателен)
-    store_src_id = os.environ.get("MS_STORE_SRC_ID") or os.environ.get("MOYSKLAD_STORE_ID")
-    store_fbo_id = os.environ.get("MS_STORE_FBO_ID")
-    if not store_src_id:
-        raise KeyError("MS_STORE_SRC_ID (или MOYSKLAD_STORE_ID как fallback)")
-    if not store_fbo_id:
-        raise KeyError("MS_STORE_FBO_ID")
+    # назначение (FBO)
+    store_fbo_id = os.environ.get("MS_STORE_FBO_ID") or "77b4a517-3b82-11f0-0a80-18cb00037a24"
+    store_fbo_id = str(store_fbo_id).strip()
 
-    # Статусы (у тебя есть)
+    # Статусы
     state_customerorder_fbo_id = _env("MS_STATE_CUSTOMERORDER_FBO_ID")
     state_move_supply_id = _env("MS_STATE_MOVE_SUPPLY_ID")
     state_demand_fbo_id = _env("MS_STATE_DEMAND_FBO_ID")
 
-    # Кабинет 1
+    base_url = os.environ.get("OZON_BASE_URL") or "https://api-seller.ozon.ru"
+
+    cabinets: list[CabinetRuntime] = []
+
+    # ===== Кабинет 1 =====
     cab1 = OzonCabinet(
         name="ozon1",
         base_url=base_url,
         api_key=_env("OZON1_API_KEY"),
         client_id=_env("OZON1_CLIENT_ID"),
     )
+    oz1 = OzonSupplyClient(cabinet=cab1)
+
     ms_cfg_1 = MsFboConfig(
         organization_id=organization_id,
         counterparty_ozon_id=counterparty_ozon_id,
@@ -60,17 +59,22 @@ def main() -> None:
         state_demand_fbo_id=state_demand_fbo_id,
         sales_channel_id=_env("MS_SALES_CHANNEL_OZON1"),
     )
+    ms1 = MoySkladSupplyService(ms_token=ms_token, cfg=ms_cfg_1)
 
-    cabinets = [CabinetRuntime(cabinet=cab1, ms_cfg=ms_cfg_1)]
+    cabinets.append(CabinetRuntime(name="ozon1", ozon=oz1, ms=ms1))
 
-    # Кабинет 2 (опционально)
-    if os.environ.get("OZON2_API_KEY") and os.environ.get("OZON2_CLIENT_ID") and os.environ.get("MS_SALES_CHANNEL_OZON2"):
+    # ===== Кабинет 2 (опционально) =====
+    ozon2_client_id = os.environ.get("OZON2_CLIENT_ID")
+    ozon2_api_key = os.environ.get("OZON2_API_KEY")
+    if ozon2_client_id and ozon2_api_key:
         cab2 = OzonCabinet(
             name="ozon2",
             base_url=base_url,
             api_key=_env("OZON2_API_KEY"),
             client_id=_env("OZON2_CLIENT_ID"),
         )
+        oz2 = OzonSupplyClient(cabinet=cab2)
+
         ms_cfg_2 = MsFboConfig(
             organization_id=organization_id,
             counterparty_ozon_id=counterparty_ozon_id,
@@ -81,7 +85,9 @@ def main() -> None:
             state_demand_fbo_id=state_demand_fbo_id,
             sales_channel_id=_env("MS_SALES_CHANNEL_OZON2"),
         )
-        cabinets.append(CabinetRuntime(cabinet=cab2, ms_cfg=ms_cfg_2))
+        ms2 = MoySkladSupplyService(ms_token=ms_token, cfg=ms_cfg_2)
+
+        cabinets.append(CabinetRuntime(name="ozon2", ozon=oz2, ms=ms2))
 
     sync_fbo_supplies(ms_token=ms_token, cabinets=cabinets)
 
