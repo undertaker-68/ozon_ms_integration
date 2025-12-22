@@ -1,137 +1,96 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-from app.http import request_json, HttpError
 
-# Подключение всех сущностей (например, если они в meta)
-def ms_meta(entity: str, uuid: str) -> Dict[str, Any]:
-    return {
-        "meta": {
-            "href": f"https://api.moysklad.ru/api/remap/1.2/entity/{entity}/{uuid}",
-            "type": entity,
-            "mediaType": "application/json",
-        }
-    }
+import os
 
-def ms_moment_from_date(date_yyyy_mm_dd: str, hh: str = "00", mm: str = "00", ss: str = "00") -> str:
-    return f"{date_yyyy_mm_dd} {hh}:{mm}:{ss}.000"
+from app.supply_sync import sync_fbo_supplies, CabinetRuntime
+from app.ozon_supply_client import OzonCabinet, OzonSupplyClient
+from app.moysklad_supply_service import MsFboConfig, MoySkladSupplyService
 
-@dataclass(frozen=True)
-class MsFboConfig:
-    organization_id: str
-    counterparty_ozon_id: str
-    store_src_id: str  # склад-источник (откуда перемещаем)
-    store_fbo_id: str  # склад-назначение (FBO)
-    state_customerorder_fbo_id: str
-    state_move_supply_id: str
-    state_demand_fbo_id: str
-    sales_channel_id: str  # кабинет-зависимый
 
-class MoySkladSupplyService:
-    def __init__(self, *, ms_token: str, cfg: MsFboConfig) -> None:
-        self.ms_token = ms_token
-        self.cfg = cfg
-        self.base = "https://api.moysklad.ru/api/remap/1.2"
+def _env(name: str, default: str | None = None) -> str:
+    v = os.environ.get(name, default)
+    if v is None or str(v).strip() == "":
+        raise KeyError(name)
+    return str(v).strip()
 
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.ms_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json;charset=utf-8",
-        }
 
-    def find_customerorder_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
-        url = f"{self.base}/entity/customerorder"
-        params = {"filter": f"externalCode={external_code}"}
-        rep = request_json("GET", url, headers=self._headers(), params=params, timeout=90)
-        rows = rep.get("rows") or []
-        return rows[0] if rows else None
+def main() -> None:
+    # MS token
+    ms_token = _env("MOYSKLAD_TOKEN")
 
-    def update_customerorder(self, customerorder_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        url = f"{self.base}/entity/customerorder/{customerorder_id}"
-        return request_json("PUT", url, headers=self._headers(), json_body=payload, timeout=90)
+    # MS: org + counterparty
+    organization_id = _env("MS_ORGANIZATION_ID", os.environ.get("MOYSKLAD_ORG_ID"))
+    counterparty_ozon_id = _env("MS_COUNTERPARTY_OZON_ID", os.environ.get("MOYSKLAD_OZON_COUNTERPARTY_ID"))
 
-    def create_customerorder(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        url = f"{self.base}/entity/customerorder"
-        return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=90)
+    # Склады (если нет MS_STORE_SRC_ID/MS_STORE_FBO_ID — берём известные)
+    # источник (СКЛАД)
+    store_src_id = os.environ.get("MS_STORE_SRC_ID") or os.environ.get("MOYSKLAD_STORE_ID") or "7cdb9b20-9910-11ec-0a80-08670002d998"
+    store_src_id = str(store_src_id).strip()
 
-    def _expand_items_to_component_positions(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        agg_qty: Dict[str, float] = {}  
-        meta_by_href: Dict[str, Dict[str, Any]] = {}
-        price_by_href: Dict[str, int] = {}
+    # назначение (FBO)
+    store_fbo_id = os.environ.get("MS_STORE_FBO_ID") or "77b4a517-3b82-11f0-0a80-18cb00037a24"
+    store_fbo_id = str(store_fbo_id).strip()
 
-        def remember(href: str, meta: Dict[str, Any], qty: float, price: int) -> None:
-            if not href or qty <= 0:
-                return
-            agg_qty[href] = agg_qty.get(href, 0.0) + qty
-            if href not in meta_by_href and meta:
-                meta_by_href[href] = meta
-            if href not in price_by_href:
-                price_by_href[href] = int(price or 0)
+    # Статусы
+    state_customerorder_fbo_id = _env("MS_STATE_CUSTOMERORDER_FBO_ID")
+    state_move_supply_id = _env("MS_STATE_MOVE_SUPPLY_ID")
+    state_demand_fbo_id = _env("MS_STATE_DEMAND_FBO_ID")
 
-        for it in items:
-            offer_id = str(it.get("offer_id") or "").strip()
-            qty = float(it.get("quantity") or 0)
-            if not offer_id or qty <= 0:
-                continue
-            a = self.find_assortment_by_article(offer_id)
-            if not a:
-                continue
-            a_meta = (a.get("meta") or {})
-            a_type = str(a_meta.get("type") or "").lower()
-            a_href = str(a_meta.get("href") or "").strip()
-            a_price = self._pick_sale_price_value(a)
+    base_url = os.environ.get("OZON_BASE_URL") or "https://api-seller.ozon.ru"
 
-            if a_type == "bundle" and a_href:
-                bundle_id = a_href.rstrip("/").split("/")[-1]
-                b = self.get_bundle(bundle_id)
-                comps = ((b or {}).get("components") or {}).get("rows") or []
-                for c in comps:
-                    c_qty = float(c.get("quantity") or 0)
-                    c_meta = ((c.get("assortment") or {}).get("meta") or {})
-                    c_href = str(c_meta.get("href") or "").strip()
-                    if not c_href or c_qty <= 0:
-                        continue
-                    remember(c_href, c_meta, qty * c_qty, 0)  # Price can be set later
-            else:
-                remember(a_href, a_meta, qty, a_price)
+    cabinets: list[CabinetRuntime] = []
 
-        positions: List[Dict[str, Any]] = []
-        for href, q in agg_qty.items():
-            meta = meta_by_href.get(href) or {}
-            price = int(price_by_href.get(href) or 0)
-            if not meta:
-                parts = href.rstrip("/").split("/")
-                ent_type = parts[-2]
-                meta = {"href": href, "type": ent_type, "mediaType": "application/json"}
-            positions.append({"assortment": {"meta": meta}, "quantity": q, "price": price})
-        return positions
+    # ===== Кабинет 1 =====
+    cab1 = OzonCabinet(
+        name="ozon1",
+        base_url=base_url,
+        api_key=_env("OZON1_API_KEY"),
+        client_id=_env("OZON1_CLIENT_ID"),
+    )
+    oz1 = OzonSupplyClient(cabinet=cab1)
 
-    def upsert_customerorder(self, *, order_number: str, shipment_planned_moment: str, core: Dict[str, Any], items: List[Dict[str, Any]], dry_run: bool) -> Dict[str, Any]:
-        existing = self.find_customerorder_by_external_code(order_number)
-        payload: Dict[str, Any] = {
-            "externalCode": order_number,
-            "name": order_number,
-            "organization": ms_meta("organization", self.cfg.organization_id),
-            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
-            "store": ms_meta("store", self.cfg.store_fbo_id),
-            "state": ms_meta("state", self.cfg.state_customerorder_fbo_id),
-            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
-            "applicable": True,
-        }
-        if shipment_planned_moment:
-            payload["shipmentPlannedMoment"] = shipment_planned_moment
+    ms_cfg_1 = MsFboConfig(
+        organization_id=organization_id,
+        counterparty_ozon_id=counterparty_ozon_id,
+        store_src_id=store_src_id,
+        store_fbo_id=store_fbo_id,
+        state_customerorder_fbo_id=state_customerorder_fbo_id,
+        state_move_supply_id=state_move_supply_id,
+        state_demand_fbo_id=state_demand_fbo_id,
+        sales_channel_id=_env("MS_SALES_CHANNEL_OZON1"),
+    )
+    ms1 = MoySkladSupplyService(ms_token=ms_token, cfg=ms_cfg_1)
 
-        if dry_run:
-            return existing or {"id": "DRYRUN", "meta": {"href": "DRYRUN"}}
+    cabinets.append(CabinetRuntime(name="ozon1", ozon=oz1, ms=ms1))
 
-        if existing:
-            co = self.update_customerorder(existing["id"], payload)
-        else:
-            payload["description"] = self._build_comment_once(order_number, core)
-            co = self.create_customerorder(payload)
+    # ===== Кабинет 2 (опционально) =====
+    ozon2_client_id = os.environ.get("OZON2_CLIENT_ID")
+    ozon2_api_key = os.environ.get("OZON2_API_KEY")
+    if ozon2_client_id and ozon2_api_key:
+        cab2 = OzonCabinet(
+            name="ozon2",
+            base_url=base_url,
+            api_key=_env("OZON2_API_KEY"),
+            client_id=_env("OZON2_CLIENT_ID"),
+        )
+        oz2 = OzonSupplyClient(cabinet=cab2)
 
-        positions = self._expand_items_to_component_positions(items)
-        self.replace_customerorder_positions(co["id"], positions)
+        ms_cfg_2 = MsFboConfig(
+            organization_id=organization_id,
+            counterparty_ozon_id=counterparty_ozon_id,
+            store_src_id=store_src_id,
+            store_fbo_id=store_fbo_id,
+            state_customerorder_fbo_id=state_customerorder_fbo_id,
+            state_move_supply_id=state_move_supply_id,
+            state_demand_fbo_id=state_demand_fbo_id,
+            sales_channel_id=_env("MS_SALES_CHANNEL_OZON2"),
+        )
+        ms2 = MoySkladSupplyService(ms_token=ms_token, cfg=ms_cfg_2)
 
-        return co
+        cabinets.append(CabinetRuntime(name="ozon2", ozon=oz2, ms=ms2))
+
+    sync_fbo_supplies(ms_token=ms_token, cabinets=cabinets)
+
+
+if __name__ == "__main__":
+    main()
