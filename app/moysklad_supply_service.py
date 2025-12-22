@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.http import request_json, HttpError
 
@@ -21,14 +21,14 @@ class MsFboConfig:
     organization_id: str
     counterparty_ozon_id: str
 
-    store_src_id: str  # СКЛАД
-    store_fbo_id: str  # FBO
+    store_src_id: str  # СКЛАД-источник (ваш)
+    store_fbo_id: str  # FBO (ваш)
 
     state_customerorder_fbo_id: str
     state_move_supply_id: str
     state_demand_fbo_id: str
 
-    sales_channel_id: str  # дефолт, но мы меняем на кабинетный через set_sales_channel()
+    sales_channel_id: str  # кабинет-зависимый
 
 
 class MoySkladSupplyService:
@@ -37,9 +37,9 @@ class MoySkladSupplyService:
         self.cfg = cfg
         self.base = "https://api.moysklad.ru/api/remap/1.2"
         self._assort_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._bundle_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     def set_sales_channel(self, sales_channel_id: str) -> None:
-        # для каждого кабинета свой канал продаж
         self.cfg = MsFboConfig(
             organization_id=self.cfg.organization_id,
             counterparty_ozon_id=self.cfg.counterparty_ozon_id,
@@ -58,10 +58,9 @@ class MoySkladSupplyService:
             "Accept": "application/json;charset=utf-8",
         }
 
-    # ---------- helper: comment (НЕ обновляем, только ставим при создании) ----------
+    # ---------- helper: comment (ставим только при создании заказа) ----------
 
     def _build_comment_once(self, order_number: str, core: Dict[str, Any]) -> str:
-        # <номер> - <склад получатель>
         wh_name = ((core.get("drop_off_warehouse") or {}).get("name")) or ""
         wh_name = (wh_name or "").strip()
         if wh_name:
@@ -86,15 +85,33 @@ class MoySkladSupplyService:
         return a
 
     def _pick_sale_price_value(self, assortment: Dict[str, Any]) -> int:
-        sale_prices = assortment.get("salePrices") or []
-        if not sale_prices:
-            return 0
-        for sp in sale_prices:
-            pt = sp.get("priceType") or {}
-            name = (pt.get("name") or "").strip().lower()
-            if name in ("цена продажи", "sale price"):
-                return int(sp.get("value") or 0)
-        return int(sale_prices[0].get("value") or 0)
+        """
+        Цена в МС в копейках (int).
+        Берем salePrices[0].value если есть, иначе 0.
+        """
+        sp = assortment.get("salePrices") or []
+        if sp:
+            v = sp[0].get("value")
+            if isinstance(v, int):
+                return v
+            try:
+                return int(float(v))
+            except Exception:
+                return 0
+        return 0
+
+    # ---------- bundle (комплект) ----------
+
+    def get_bundle(self, bundle_id: str) -> Optional[Dict[str, Any]]:
+        bundle_id = (bundle_id or "").strip()
+        if not bundle_id:
+            return None
+        if bundle_id in self._bundle_cache:
+            return self._bundle_cache[bundle_id]
+        url = f"{self.base}/entity/bundle/{bundle_id}"
+        b = request_json("GET", url, headers=self._headers(), timeout=60)
+        self._bundle_cache[bundle_id] = b
+        return b
 
     # ---------- customerorder ----------
 
@@ -135,7 +152,7 @@ class MoySkladSupplyService:
         self,
         *,
         order_number: str,
-        shipment_planned_moment: str,  # уже в формате МС
+        shipment_planned_moment: str,
         core: Dict[str, Any],
         items: List[Dict[str, Any]],
         dry_run: bool,
@@ -150,10 +167,9 @@ class MoySkladSupplyService:
             "store": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_customerorder_fbo_id),
             "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
-            "applicable": True,  # ЗАКАЗ ВСЕГДА ПРОВЕДЕН
+            "applicable": True,  # Заказ ВСЕГДА проведен
         }
 
-        # shipmentPlannedMoment обновляем при изменениях (просто ставим всегда)
         if shipment_planned_moment:
             payload["shipmentPlannedMoment"] = shipment_planned_moment
 
@@ -161,14 +177,13 @@ class MoySkladSupplyService:
             return existing or {"id": "DRYRUN", "meta": {"href": "DRYRUN"}}
 
         if existing:
-            # description НЕ обновляем (по ТЗ)
+            # description НЕ обновляем
             co = self.update_customerorder(existing["id"], payload)
         else:
-            # description ставим только при создании
             payload["description"] = self._build_comment_once(order_number, core)
             co = self.create_customerorder(payload)
 
-        # позиции пересобираем полностью (если demand нет — это гарантируется снаружи)
+        # позиции пересобираем полностью (если demand нет — гарантируется снаружи)
         positions: List[Dict[str, Any]] = []
         for it in items or []:
             offer_id = str(it.get("offer_id") or "").strip()
@@ -183,50 +198,6 @@ class MoySkladSupplyService:
 
         self.replace_customerorder_positions(co["id"], positions)
         return co
-
-    # ---------- demand ----------
-
-    def find_demand_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
-        url = f"{self.base}/entity/demand"
-        params = {"filter": f"externalCode={external_code}"}
-        rep = request_json("GET", url, headers=self._headers(), params=params, timeout=60)
-        rows = rep.get("rows") or []
-        return rows[0] if rows else None
-
-    def create_demand(
-        self,
-        *,
-        customerorder_meta: Dict[str, Any],
-        order_number: str,
-        core: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        url = f"{self.base}/entity/demand"
-        payload: Dict[str, Any] = {
-            "externalCode": order_number,  # только для поиска, номер (name) оставит МС по хронологии
-            "customerOrder": customerorder_meta,
-            "organization": ms_meta("organization", self.cfg.organization_id),
-            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
-            "store": ms_meta("store", self.cfg.store_fbo_id),
-            "state": ms_meta("state", self.cfg.state_demand_fbo_id),
-            "salesChannel": ms_meta("saleschannel", self.cfg.sales_channel_id),
-            "description": self._build_comment_once(order_number, core),  # при создании
-        }
-        return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=180)
-
-    def ensure_demand_from_customerorder(
-        self,
-        *,
-        order_number: str,
-        customerorder_meta: Dict[str, Any],
-        core: Dict[str, Any],
-        dry_run: bool,
-    ) -> Optional[Dict[str, Any]]:
-        if dry_run:
-            return None
-        d = self.find_demand_by_external_code(order_number)
-        if d:
-            return d
-        return self.create_demand(customerorder_meta=customerorder_meta, order_number=order_number, core=core)
 
     # ---------- move ----------
 
@@ -262,19 +233,44 @@ class MoySkladSupplyService:
         url = f"{self.base}/entity/move/{move_id}"
         request_json("DELETE", url, headers=self._headers(), timeout=60)
 
-    def get_bundle(self, bundle_id: str) -> Dict[str, Any]:
-        url = f"{self.base}/entity/bundle/{bundle_id}"
-        return request_json("GET", url, headers=self._headers(), timeout=60)
+    def upsert_move_linked_to_order(
+        self,
+        *,
+        order_number: str,
+        customerorder: Dict[str, Any],
+        items: List[Dict[str, Any]],
+        dry_run: bool,
+    ) -> Dict[str, Any]:
+        """
+        Move создаем/обновляем всегда, если demand еще нет.
+        Обязательная связь: customerOrder (для "Связанные документы").
+        Позиции Move = позиции заказа, но:
+          - комплекты (bundle) в Move запрещены -> раскрываем в компоненты.
+        Пытаемся провести move. Если ошибка остатков (3007) -> оставляем непроведенным.
+        """
+        existing = self.find_move_by_external_code(order_number)
 
-    def _build_move_positions_from_items(self, items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
-        """
-        В move нельзя bundle. Поэтому:
-        - находим ассортимент по артикулу
-        - если bundle -> разворачиваем компоненты
-        Возвращаем (positions, has_positions)
-        """
+        payload: Dict[str, Any] = {
+            "externalCode": order_number,
+            "name": order_number,
+            "organization": ms_meta("organization", self.cfg.organization_id),
+            "sourceStore": ms_meta("store", self.cfg.store_src_id),
+            "targetStore": ms_meta("store", self.cfg.store_fbo_id),
+            "state": ms_meta("state", self.cfg.state_move_supply_id),
+            "customerOrder": {"meta": (customerorder.get("meta") or {})},  # связь Move ↔ Order
+            "applicable": False,  # сначала создадим/обновим, потом попробуем провести
+        }
+
+        if dry_run:
+            return existing or {"id": "DRYRUN", "meta": {"href": "DRYRUN"}, "applicable": False}
+
+        if existing:
+            mv = self.update_move(existing["id"], payload)
+        else:
+            mv = self.create_move(payload)
+
+        # ----- build move positions (with bundle expansion) -----
         agg: Dict[str, float] = {}
-
         for it in items or []:
             offer_id = str(it.get("offer_id") or "").strip()
             qty = float(it.get("quantity") or 0)
@@ -285,91 +281,81 @@ class MoySkladSupplyService:
             if not a:
                 continue
 
-            meta = a.get("meta") or {}
-            a_type = str(meta.get("type") or "").lower()
-            href = str(meta.get("href") or "")
-            a_id = href.rstrip("/").split("/")[-1] if href else ""
+            a_meta = (a.get("meta") or {})
+            a_type = (a_meta.get("type") or "").lower()
+            a_href = a_meta.get("href") or ""
 
-            if a_type == "bundle" and a_id:
-                b = self.get_bundle(a_id)
-                comps = ((b.get("components") or {}).get("rows")) or []
+            if a_type == "bundle" and a_href:
+                bundle_id = a_href.rstrip("/").split("/")[-1]
+                b = self.get_bundle(bundle_id)
+                comps = ((b or {}).get("components") or {}).get("rows") or []
                 for c in comps:
                     c_qty = float(c.get("quantity") or 0)
-                    c_meta = ((c.get("assortment") or {}).get("meta")) or {}
-                    c_href = c_meta.get("href")
-                    if not c_href or c_qty <= 0:
+                    c_ass = ((c.get("assortment") or {}).get("meta") or {})
+                    c_href = c_ass.get("href") or ""
+                    if c_qty <= 0 or not c_href:
                         continue
                     agg[c_href] = agg.get(c_href, 0.0) + qty * c_qty
             else:
-                if href:
-                    agg[href] = agg.get(href, 0.0) + qty
+                if a_href:
+                    agg[a_href] = agg.get(a_href, 0.0) + qty
 
-        positions: List[Dict[str, Any]] = []
+        move_positions: List[Dict[str, Any]] = []
         for href, q in agg.items():
             if q <= 0:
                 continue
             parts = href.rstrip("/").split("/")
-            ent_type = parts[-2]
-            positions.append(
+            ent_type = parts[-2]  # .../entity/{type}/{id}
+            move_positions.append(
                 {
-                    "assortment": {"meta": {"href": href, "type": ent_type, "mediaType": "application/json"}},
+                    "assortment": {
+                        "meta": {
+                            "href": href,
+                            "type": ent_type,
+                            "mediaType": "application/json",
+                        }
+                    },
                     "quantity": q,
                 }
             )
 
-        return positions, bool(positions)
+        self.replace_move_positions(mv["id"], move_positions)
 
-    def upsert_move_linked_to_customerorder(
-        self,
-        *,
-        order_number: str,
-        customerorder_meta: Dict[str, Any],
-        core: Dict[str, Any],
-        items: List[Dict[str, Any]],
-        dry_run: bool,
-    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        # ----- try conduct move -----
+        try:
+            mv2 = self.update_move(mv["id"], {"applicable": True})
+            return mv2
+        except HttpError as e:
+            # 3007: "Нельзя переместить товар, которого нет на складе"
+            # оставляем непроведенным
+            if e.status in (400, 412) and ("3007" in (e.text or "") or "Нельзя переместить" in (e.text or "")):
+                self.update_move(mv["id"], {"applicable": False})
+                # вернем объект в любом виде
+                mv["applicable"] = False
+                return mv
+            raise
+
+    # ---------- demand ----------
+
+    def find_demand_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
+        url = f"{self.base}/entity/demand"
+        params = {"filter": f"externalCode={external_code}"}
+        rep = request_json("GET", url, headers=self._headers(), params=params, timeout=60)
+        rows = rep.get("rows") or []
+        return rows[0] if rows else None
+
+    def create_demand_from_customerorder(self, *, customerorder: Dict[str, Any], order_number: str) -> Dict[str, Any]:
         """
-        Move создаём/обновляем (если demand нет — проверяется снаружи).
-        - Связь с заказом: customerOrder (чтобы было в "Связанных документах")
-        - Проводим move, но если 3007 -> оставляем непроведённым.
-        Возвращаем (move, has_positions)
+        Номер demand оставляем "как в МС" (хронология), поэтому НЕ задаем name.
+        externalCode ставим = order_number только для поиска/идемпотентности.
         """
-        if dry_run:
-            return None, False
-
-        existing = self.find_move_by_external_code(order_number)
-
-        # description не обновляем — только при создании
-        payload_base: Dict[str, Any] = {
+        url = f"{self.base}/entity/demand"
+        payload: Dict[str, Any] = {
             "externalCode": order_number,
             "organization": ms_meta("organization", self.cfg.organization_id),
-            "sourceStore": ms_meta("store", self.cfg.store_src_id),
-            "targetStore": ms_meta("store", self.cfg.store_fbo_id),
-            "state": ms_meta("state", self.cfg.state_move_supply_id),
-            "customerOrder": customerorder_meta,  # связь "как в UI"
-            "applicable": False,  # сначала непроведённое
+            "agent": ms_meta("counterparty", self.cfg.counterparty_ozon_id),
+            "store": ms_meta("store", self.cfg.store_fbo_id),
+            "state": ms_meta("state", self.cfg.state_demand_fbo_id),
+            "customerOrder": {"meta": (customerorder.get("meta") or {})},
         }
-
-        if existing:
-            mv = self.update_move(existing["id"], payload_base)
-        else:
-            payload_base["description"] = self._build_comment_once(order_number, core)
-            mv = self.create_move(payload_base)
-
-        positions, has_positions = self._build_move_positions_from_items(items)
-        # пересобираем позиции полностью
-        self.replace_move_positions(mv["id"], positions)
-
-        # пытаемся провести ТОЛЬКО если есть позиции
-        if has_positions:
-            try:
-                mv = self.update_move(mv["id"], {"applicable": True})
-            except HttpError as e:
-                # 3007: нет товара на складе -> оставляем непроведённым и не падаем
-                txt = getattr(e, "text", "") or str(e)
-                if e.status_code == 412 and ("3007" in txt or "Нельзя переместить товар" in txt):
-                    self.update_move(mv["id"], {"applicable": False})
-                else:
-                    raise
-
-        return mv, has_positions
+        return request_json("POST", url, headers=self._headers(), json_body=payload, timeout=60)
