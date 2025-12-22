@@ -2,158 +2,219 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.ozon_supply_client import OzonCabinet, OzonSupplyClient
-from app.moysklad_supply_service import MoySkladSupplyService, MsFboConfig
 from app.http import HttpError
+from app.moysklad_supply_service import MoySkladSupplyService, MsFboConfig, ms_moment_from_date
+from app.ozon_supply_client import OzonSupplyClient
 
+# Статусы поставок/заказов, которые мы тянем
 STATES_ALL = [
-    "DATA_FILLING",
+    "AWAITING_DELIVERY",
     "READY_TO_SUPPLY",
-    "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+    "REPORTS_CONFIRMATION_AWAITING",
     "IN_TRANSIT",
     "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
-    "REPORTS_CONFIRMATION_AWAITING",
-    "REPORT_REJECTED",
     "COMPLETED",
-    "REJECTED_AT_SUPPLY_WAREHOUSE",
     "CANCELLED",
-    "OVERDUE",
 ]
 
-STATE_CREATE_DEMAND = {"IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE"}
-STATE_CANCELLED = {"CANCELLED"}
+# Только эти статусы должны создавать Demand
+DEMAND_STATES = {"IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE"}
 
 
 @dataclass(frozen=True)
 class CabinetRuntime:
-    cabinet: OzonCabinet
-    ms_cfg: MsFboConfig
+    name: str
+    ozon: OzonSupplyClient
+    ms: MoySkladSupplyService
 
 
-def _env_bool(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "y", "on")
+def _parse_ozon_timeslot_date(core: Dict[str, Any]) -> str:
+    """
+    По ТЗ: всегда timeslot.timeslot.from
+    Берём только дату YYYY-MM-DD
+    """
+    try:
+        ts = ((core.get("timeslot") or {}).get("timeslot") or {})
+        s = str(ts.get("from") or "").strip()
+        # ожидаем ISO, например 2025-12-17T12:00:00Z
+        if not s:
+            return ""
+        return s.split("T", 1)[0]
+    except Exception:
+        return ""
 
 
-def _parse_iso_dt(s: str) -> datetime:
-    s = (s or "").strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s)
+def _planned_moment_ms(core: Dict[str, Any]) -> str:
+    d = _parse_ozon_timeslot_date(core)
+    if not d:
+        return ""
+    # время любое, главное дата
+    return ms_moment_from_date(d, "00", "00", "00")
 
 
-def _parse_offset_seconds(s: str) -> int:
-    s = (s or "").strip().lower()
-    if s.endswith("s"):
-        s = s[:-1]
-    return int(s or "0")
+def _planned_from_env() -> Optional[str]:
+    """
+    FBO_PLANNED_FROM=YYYY-MM-DD
+    """
+    s = str(os.environ.get("FBO_PLANNED_FROM") or "").strip()
+    return s or None
 
 
-def _planned_local_date(order: Dict[str, Any]) -> Optional[date]:
-    ts = (order.get("timeslot") or {}).get("timeslot") or {}
-    from_iso = ts.get("from")
-    if not from_iso:
-        return None
-
-    tz_info = (order.get("timeslot") or {}).get("timezone_info") or {}
-    offset_s = _parse_offset_seconds(tz_info.get("offset") or "0s")
-    tz = timezone(timedelta(seconds=offset_s))
-
-    dt_utc = _parse_iso_dt(from_iso).astimezone(timezone.utc)
-    dt_local = dt_utc.astimezone(tz)
-    return dt_local.date()
+def _is_planned_after_threshold(core: Dict[str, Any], planned_from: Optional[str]) -> bool:
+    if not planned_from:
+        return True
+    d = _parse_ozon_timeslot_date(core)
+    if not d:
+        return False
+    try:
+        return d >= planned_from
+    except Exception:
+        return False
 
 
-def _planned_ms_moment_isoz(d: date) -> str:
-    # Самый надежный формат для МС
-    return f"{d.isoformat()}T00:00:00Z"
+def _normalize_bundle_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Унификация структуры items из Ozon bundle endpoint:
+    выход: [{"offer_id": "...", "quantity": N}, ...]
+    """
+    out: List[Dict[str, Any]] = []
+    for it in items or []:
+        offer_id = it.get("offer_id") or it.get("offerId") or it.get("offerID")
+        qty = it.get("quantity") or it.get("qty") or it.get("count")
+        # некоторые ответы могут отдавать вложенно
+        if not offer_id and isinstance(it.get("product"), dict):
+            offer_id = it["product"].get("offer_id") or it["product"].get("offerId")
+        if qty is None and isinstance(it.get("product"), dict):
+            qty = it["product"].get("quantity") or it["product"].get("qty")
+
+        offer_id = str(offer_id or "").strip()
+        try:
+            q = float(qty or 0)
+        except Exception:
+            q = 0
+
+        if offer_id and q > 0:
+            out.append({"offer_id": offer_id, "quantity": q})
+    return out
 
 
-def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
-    dry_run = _env_bool("FBO_DRY_RUN", "0")
-    allow_delete = _env_bool("FBO_ALLOW_DELETE", "0")
+def sync_fbo_supplies(*, ms_token: str, cabinets: List[Dict[str, Any]]) -> None:
+    dry_run = str(os.environ.get("FBO_DRY_RUN") or "1").strip() == "1"
+    allow_delete = str(os.environ.get("FBO_ALLOW_DELETE") or "0").strip() == "1"
+    planned_from = _planned_from_env()
 
-    planned_from_str = os.environ.get("FBO_PLANNED_FROM", "2025-12-03").strip()
-    planned_from = datetime.fromisoformat(planned_from_str).date()
+    runtimes: List[CabinetRuntime] = []
+    for cab in cabinets:
+        name = cab["name"]
+        oz: OzonSupplyClient = cab["ozon"]
+        ms_cfg: MsFboConfig = cab["ms_cfg"]
+        ms = MoySkladSupplyService(ms_token=ms_token, cfg=ms_cfg)
+        runtimes.append(CabinetRuntime(name=name, ozon=oz, ms=ms))
 
-    for c in cabinets:
-        oz = OzonSupplyClient(c.cabinet)
-        ms = MoySkladSupplyService(ms_token=ms_token, cfg=c.ms_cfg)
+    for rt in runtimes:
+        orders = rt.ozon.iter_supply_orders_full(states=STATES_ALL, limit=100, batch_get=50)
 
-        orders = oz.iter_supply_orders_full(states=STATES_ALL, limit=100, batch_get=50)
-
-        for order in orders:
-            order_number = str(order.get("order_number") or "").strip()
+        for core in orders:
+            order_number = str(core.get("order_number") or "").strip()
+            state = str(core.get("state") or "").strip()
             if not order_number:
                 continue
 
-            pd = _planned_local_date(order)
-            if not pd or pd < planned_from:
+            # фильтр по плановой дате отгрузки
+            if not _is_planned_after_threshold(core, planned_from):
                 continue
 
-            state = str(order.get("state") or "").strip()
+            shipment_planned_moment = _planned_moment_ms(core)
 
-            # если demand уже есть -> пропуск полностью
-            if ms.find_demand_by_external_code(order_number):
-                print(f"[{c.cabinet.name}] {order_number} skip: demand exists")
+            # Проверяем demand существование (по externalCode=order_number)
+            demand = rt.ms.find_demand_by_external_code(order_number)
+            if demand:
+                # По твоей логике сейчас: если Demand есть — позиции/Move не трогаем.
+                # НО плановую дату можно обновить в CustomerOrder (чтобы везде была верная).
+                co = rt.ms.find_customerorder_by_external_code(order_number)
+                if co and not dry_run and shipment_planned_moment:
+                    rt.ms.update_customerorder(co["id"], {"shipmentPlannedMoment": shipment_planned_moment})
+                print(f"[{rt.name}] {order_number} skip: demand exists")
                 continue
 
-            # отмена
-            if state in STATE_CANCELLED:
-                if dry_run or not allow_delete:
-                    mode = "DRYRUN" if dry_run else "SAFE"
-                    print(f"[{c.cabinet.name}] {order_number} {mode}: would delete move+customerorder (no demand)")
-                    continue
+            # Если статусы "В пути" / "Приемка", но demand нет — НЕ удаляем, просто пропускаем (как ты сказал)
+            if state in ("IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE") and demand is None:
+                # но order/move должны существовать; если нет — создадим ниже (это ок)
+                pass
 
-                mv = ms.find_move_by_external_code(order_number)
-                if mv:
-                    ms.delete_move(mv["id"])
-                co = ms.find_customerorder_by_external_code(order_number)
-                if co:
-                    ms.delete_customerorder(co["id"])
-                print(f"[{c.cabinet.name}] {order_number} deleted (cancelled)")
+            # Удаление (только если разрешено и demand нет)
+            if allow_delete and state == "CANCELLED":
+                co = rt.ms.find_customerorder_by_external_code(order_number)
+                mv = rt.ms.find_move_by_external_code(order_number)
+                if dry_run:
+                    print(f"[{rt.name}] {order_number} SAFE: would delete move+customerorder (no demand)")
+                else:
+                    if mv and mv.get("id"):
+                        rt.ms.delete_move(mv["id"])
+                    if co and co.get("id"):
+                        rt.ms.delete_customerorder(co["id"])
+                    print(f"[{rt.name}] {order_number} deleted (cancelled)")
                 continue
 
-            # товары поставки (bundle -> items)
-            items = oz.get_supply_order_items(order)
+            # --- Получаем items через bundle_id ---
+            bundle_id = ""
+            try:
+                supplies = (core.get("supplies") or [])
+                if supplies and isinstance(supplies, list):
+                    bundle_id = str(supplies[0].get("bundle_id") or "").strip()
+            except Exception:
+                bundle_id = ""
 
-            # если вдруг items пустые — логируем (это и есть причина "пустых заказов")
+            if not bundle_id:
+                # По твоим словам пустых поставок не бывает; если тут пусто — логируем и пропускаем
+                print(f"[{rt.name}] {order_number} WARN: no bundle_id in core -> skip")
+                continue
+
+            raw_items = rt.ozon.iter_bundle_items(bundle_id=bundle_id)
+            items = _normalize_bundle_items(raw_items)
+
             if not items:
-                print(f"[{c.cabinet.name}] {order_number} WARN: empty items from bundle -> skip")
+                # Это и было твоей проблемой: "часть заказов пустые"
+                # Теперь мы явно покажем проблему по bundle_id/items.
+                print(f"[{rt.name}] {order_number} WARN: bundle has no items (bundle_id={bundle_id}) -> skip")
                 continue
 
-            shipment_moment = _planned_ms_moment_isoz(pd)
-
-            print(f"[{c.cabinet.name}] {order_number} upsert customerorder state={state}")
-            co = ms.upsert_customerorder(
+            # --- Upsert CustomerOrder (always conducted) ---
+            co = rt.ms.upsert_customerorder(
                 order_number=order_number,
-                shipment_planned_moment=shipment_moment,
-                core=order,
+                shipment_planned_moment=shipment_planned_moment,
+                core=core,
                 items=items,
                 dry_run=dry_run,
             )
-            if dry_run:
+            print(f"[{rt.name}] {order_number} upsert customerorder state={state}")
+
+            # --- Upsert Move linked to CustomerOrder ---
+            mv = rt.ms.upsert_move_for_customerorder(order_number=order_number, customerorder=co, dry_run=dry_run)
+
+            applicable = bool(mv.get("applicable"))
+            if not applicable:
+                # если move не проведён — demand НЕ создаём
+                print(f"[{rt.name}] {order_number} done: move not conducted -> demand not created")
                 continue
 
-            mv = ms.upsert_move_linked_to_order(
-                order_number=order_number, customerorder=co, items=items, dry_run=False
-            )
-
-            if state in STATE_CREATE_DEMAND:
-                if not mv.get("applicable"):
-                    print(f"[{c.cabinet.name}] {order_number} skip demand: move not applicable")
+            # --- Create demand only for specific states ---
+            if state in DEMAND_STATES:
+                if dry_run:
+                    print(f"[{rt.name}] {order_number} DRYRUN: would create demand")
                     continue
-
                 try:
-                    ms.create_demand_from_customerorder(customerorder=co, order_number=order_number)
-                    print(f"[{c.cabinet.name}] {order_number} demand created")
+                    rt.ms.create_demand_from_customerorder(customerorder=co, order_number=order_number)
+                    print(f"[{rt.name}] {order_number} demand created")
                 except HttpError as e:
-                    txt = e.text or ""
-                    if e.status == 412 and ("3007" in txt or "Нельзя отгрузить" in txt or "нет на складе" in txt):
-                        print(f"[{c.cabinet.name}] {order_number} skip demand: no stock (3007)")
-                        continue
-                    raise
+                    body = getattr(e, "body", "") or str(e)
+                    # 3007: нет товара — просто НЕ создаём demand и не падаем
+                    if e.status_code == 412 and "3007" in body:
+                        print(f"[{rt.name}] {order_number} demand NOT created (not enough stock)")
+                    else:
+                        raise
             else:
-                print(f"[{c.cabinet.name}] {order_number} done: state={state}")
+                print(f"[{rt.name}] {order_number} done: state={state}")
