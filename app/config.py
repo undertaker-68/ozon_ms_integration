@@ -30,6 +30,10 @@ class Config:
     log_level: str
     cache_dir: str
 
+    # + в dataclass
+    moysklad_org_id: str
+    moysklad_ozon_agent_id: str
+
 def load_config() -> Config:
     return Config(
         moysklad_token=_req("MOYSKLAD_TOKEN"),
@@ -45,4 +49,7 @@ def load_config() -> Config:
 
         log_level=_opt("LOG_LEVEL", "INFO").upper(),
         cache_dir=_opt("CACHE_DIR", "/var/tmp/ozon_ms_cache"),
+
+        moysklad_org_id=_opt("MOYSKLAD_ORG_ID", ""),
+        moysklad_ozon_agent_id=_opt("MOYSKLAD_OZON_AGENT_ID", ""),
     )
