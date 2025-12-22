@@ -2,16 +2,38 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone, date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from app.ozon_client import OzonClient
+from app.ozon_supply_client import OzonCabinet, OzonSupplyClient
 from app.moysklad_supply_service import MoySkladSupplyService, MsFboConfig
 
+STATES_ALL = [
+    "DATA_FILLING",
+    "READY_TO_SUPPLY",
+    "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+    "IN_TRANSIT",
+    "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+    "REPORTS_CONFIRMATION_AWAITING",
+    "REPORT_REJECTED",
+    "COMPLETED",
+    "REJECTED_AT_SUPPLY_WAREHOUSE",
+    "CANCELLED",
+    "OVERDUE",
+]
 
-# Ozon states
-STATE_CANCELLED = {"CANCELLED", "REJECTED_AT_SUPPLY_WAREHOUSE", "OVERDUE"}
-STATE_NEED_DEMAND = {"IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE"}  # по ТЗ
+STATE_CREATE_DEMAND = {"IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE"}
+STATE_CANCELLED = {"CANCELLED"}  # удаление только по CANCELLED (как было)
+
+
+@dataclass(frozen=True)
+class CabinetRuntime:
+    cabinet: OzonCabinet
+    ms_cfg: MsFboConfig  # для salesChannel (кабинетный)
+
+
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _parse_iso_dt(s: str) -> datetime:
@@ -24,25 +46,24 @@ def _parse_iso_dt(s: str) -> datetime:
 
 
 def _parse_offset_seconds(s: str) -> int:
-    # "25200s" -> 25200
     s = (s or "").strip().lower()
     if s.endswith("s"):
         s = s[:-1]
     return int(s or "0")
 
 
-def _planned_local_date(core: Dict[str, Any]) -> Optional[date]:
+def _planned_local_date(order: Dict[str, Any]) -> Optional[date]:
     """
-    Берём дату плановой отгрузки по Ozon timeslot:
-      timeslot.timeslot.from + timeslot.timezone_info.offset
-    Возвращаем только DATE (локальную, по offset).
+    Берём дату плановой отгрузки по Ozon:
+      order.timeslot.timeslot.from + order.timeslot.timezone_info.offset
+    Возвращаем локальную DATE.
     """
-    ts = (core.get("timeslot") or {}).get("timeslot") or {}
+    ts = (order.get("timeslot") or {}).get("timeslot") or {}
     from_iso = ts.get("from")
     if not from_iso:
         return None
 
-    tz_info = (core.get("timeslot") or {}).get("timezone_info") or {}
+    tz_info = (order.get("timeslot") or {}).get("timezone_info") or {}
     offset_s = _parse_offset_seconds(tz_info.get("offset") or "0s")
     tz = timezone(timedelta(seconds=offset_s))
 
@@ -51,81 +72,40 @@ def _planned_local_date(core: Dict[str, Any]) -> Optional[date]:
     return dt_local.date()
 
 
-def _planned_ms_moment_from_local_date(d: date) -> str:
+def _planned_ms_moment(d: date) -> str:
     """
-    МС требует moment. ТЗ: важна только дата, время любое.
-    Ставим 00:00:00 UTC на нужную дату.
+    MS требует moment: "YYYY-MM-DD HH:MM:SS.mmm+0000"
+    Важна только дата -> ставим 00:00:00 UTC.
     """
     dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
-    # формат MS: "YYYY-MM-DD HH:MM:SS.mmm+0000"
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+0000"
 
 
-@dataclass(frozen=True)
-class Cabinet:
-    name: str
-    client_id_env: str
-    api_key_env: str
-    sales_channel_id: str  # МС, кабинет-зависимый
-
-
-@dataclass(frozen=True)
-class CabinetRuntime:
-    cabinet: Cabinet
-    ozon: OzonClient
-
-
-def _env_bool(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "y")
-
-
-def sync_fbo_supplies(
-    *,
-    ms: MoySkladSupplyService,
-    cabinets: List[CabinetRuntime],
-) -> None:
+def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
     dry_run = _env_bool("FBO_DRY_RUN", "0")
     allow_delete = _env_bool("FBO_ALLOW_DELETE", "0")
 
     planned_from_str = os.environ.get("FBO_PLANNED_FROM", "2025-12-03").strip()  # YYYY-MM-DD
     planned_from = datetime.fromisoformat(planned_from_str).date()
 
-    # состояния для листинга (чтобы не потерять ничего)
-    list_states = [
-        "DATA_FILLING",
-        "READY_TO_SUPPLY",
-        "ACCEPTED_AT_SUPPLY_WAREHOUSE",
-        "IN_TRANSIT",
-        "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
-        "REPORTS_CONFIRMATION_AWAITING",
-        "REPORT_REJECTED",
-        "COMPLETED",
-        "REJECTED_AT_SUPPLY_WAREHOUSE",
-        "CANCELLED",
-        "OVERDUE",
-    ]
-
     for c in cabinets:
-        # важно: salesChannel зависит от кабинета
-        ms.set_sales_channel(c.cabinet.sales_channel_id)
+        oz = OzonSupplyClient(c.cabinet)
+        ms = MoySkladSupplyService(ms_token=ms_token, cfg=c.ms_cfg)
 
-        order_ids = c.ozon.list_supply_order_ids(states=list_states)
+        orders = oz.iter_supply_orders_full(states=STATES_ALL, limit=100, batch_get=50)
 
-        for oid in order_ids:
-            core = c.ozon.get_supply_order(oid)
-
-            order_number = str(core.get("order_number") or "").strip()
+        for order in orders:
+            order_number = str(order.get("order_number") or "").strip()
             if not order_number:
                 continue
 
-            # фильтр по плановой дате отгрузки (ключевое!)
-            pd = _planned_local_date(core)
+            pd = _planned_local_date(order)
             if not pd:
                 continue
             if pd < planned_from:
                 continue
 
-            state = str(core.get("state") or "").strip()
+            state = str(order.get("state") or "").strip()
 
             # 1) если demand уже есть -> пропуск полностью
             if ms.find_demand_by_external_code(order_number):
@@ -148,44 +128,40 @@ def sync_fbo_supplies(
                 print(f"[{c.cabinet.name}] {order_number} deleted (cancelled)")
                 continue
 
-            # 3) получить позиции (offer_id + qty)
-            items = c.ozon.get_supply_order_items(oid)  # <-- реализация в ozon_client должна вернуть список
-            # ожидаемый формат: [{"offer_id":"...", "quantity": N}, ...]
+            # 3) позиции поставки (offer_id + quantity)
+            items = oz.get_supply_order_items(order)
 
-            # 4) upsert CustomerOrder (всегда applicable=true)
-            shipment_moment = _planned_ms_moment_from_local_date(pd)
+            # 4) upsert CustomerOrder (всегда applicable=true) + planned date
+            shipment_moment = _planned_ms_moment(pd)
             print(f"[{c.cabinet.name}] {order_number} upsert customerorder state={state}")
             co = ms.upsert_customerorder(
                 order_number=order_number,
                 shipment_planned_moment=shipment_moment,
-                core=core,
+                core=order,
                 items=items,
                 dry_run=dry_run,
             )
             if dry_run:
                 continue
 
-            # 5) upsert Move (только если demand нет — мы уже проверили)
-            # move должен быть связан с заказом и пересобираться вместе с заказом
-            mv, mv_has_positions = ms.upsert_move_linked_to_customerorder(
-                order_number=order_number,
-                customerorder_meta=co["meta"],
-                core=core,
-                items=items,
-                dry_run=dry_run,
-            )
+            # 5) upsert Move, связанный с заказом, позиции = как в заказе (bundle раскрываем)
+            mv = ms.upsert_move_linked_to_order(order_number=order_number, customerorder=co, items=items, dry_run=False)
 
-            # 6) demand создаём только по нужным статусам и только если move реально есть и не пустой
-            if state in STATE_NEED_DEMAND:
-                if mv and mv_has_positions:
-                    # externalCode для demand ставим = order_number (для поиска/идемпотентности),
-                    # а name/номер оставляем как присвоит МС (хронология)
-                    ms.ensure_demand_from_customerorder(
-                        order_number=order_number,
-                        customerorder_meta=co["meta"],
-                        core=core,
-                        dry_run=dry_run,
-                    )
-                    print(f"[{c.cabinet.name}] {order_number} demand ensured")
-                else:
-                    print(f"[{c.cabinet.name}] {order_number} demand skipped: no move/empty move")
+            mv_applicable = bool(mv.get("applicable"))
+
+            # 6) demand создаем только при статусах IN_TRANSIT / ACCEPTANCE... и только если Move проведен
+            if state in STATE_CREATE_DEMAND:
+                if not mv_applicable:
+                    print(f"[{c.cabinet.name}] {order_number} skip demand: move not applicable")
+                    continue
+
+                # идемпотентность
+                if ms.find_demand_by_external_code(order_number):
+                    print(f"[{c.cabinet.name}] {order_number} skip: demand exists")
+                    continue
+
+                ms.create_demand_from_customerorder(customerorder=co, order_number=order_number)
+                print(f"[{c.cabinet.name}] {order_number} demand created")
+            else:
+                # статусы, где demand не нужен — просто обновили заказ и move
+                print(f"[{c.cabinet.name}] {order_number} done: state={state}")
