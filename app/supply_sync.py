@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.ozon_supply_client import OzonCabinet, OzonSupplyClient
 from app.moysklad_supply_service import MoySkladSupplyService, MsFboConfig
+from app.http import HttpError
 
 STATES_ALL = [
     "DATA_FILLING",
@@ -23,13 +24,13 @@ STATES_ALL = [
 ]
 
 STATE_CREATE_DEMAND = {"IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE"}
-STATE_CANCELLED = {"CANCELLED"}  # удаление только по CANCELLED (как было)
+STATE_CANCELLED = {"CANCELLED"}  # удаление только по CANCELLED
 
 
 @dataclass(frozen=True)
 class CabinetRuntime:
     cabinet: OzonCabinet
-    ms_cfg: MsFboConfig  # для salesChannel (кабинетный)
+    ms_cfg: MsFboConfig
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
@@ -54,7 +55,7 @@ def _parse_offset_seconds(s: str) -> int:
 
 def _planned_local_date(order: Dict[str, Any]) -> Optional[date]:
     """
-    Берём дату плановой отгрузки по Ozon:
+    Дата плановой отгрузки по Ozon:
       order.timeslot.timeslot.from + order.timeslot.timezone_info.offset
     Возвращаем локальную DATE.
     """
@@ -73,9 +74,9 @@ def _planned_local_date(order: Dict[str, Any]) -> Optional[date]:
 
 
 def _planned_ms_moment(d: date) -> str:
-    # Формат, который МС стабильно принимает/показывает:
-    # "YYYY-MM-DD HH:MM:SS.mmm" (без таймзоны)
-    return f"{d.isoformat()} 00:00:00.000"
+    # МС стабильно принимает "YYYY-MM-DD HH:MM:SS" (без таймзоны)
+    return f"{d.isoformat()} 00:00:00"
+
 
 def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
     dry_run = _env_bool("FBO_DRY_RUN", "0")
@@ -140,12 +141,14 @@ def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
             if dry_run:
                 continue
 
-            # 5) upsert Move, связанный с заказом, позиции = как в заказе (bundle раскрываем)
-            mv = ms.upsert_move_linked_to_order(order_number=order_number, customerorder=co, items=items, dry_run=False)
+            # 5) upsert Move, связанный с заказом
+            mv = ms.upsert_move_linked_to_order(
+                order_number=order_number, customerorder=co, items=items, dry_run=False
+            )
 
             mv_applicable = bool(mv.get("applicable"))
 
-            # 6) demand создаем только при статусах IN_TRANSIT / ACCEPTANCE... и только если Move проведен
+            # 6) demand создаем только при нужных статусах и только если Move проведен
             if state in STATE_CREATE_DEMAND:
                 if not mv_applicable:
                     print(f"[{c.cabinet.name}] {order_number} skip demand: move not applicable")
@@ -156,8 +159,15 @@ def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
                     print(f"[{c.cabinet.name}] {order_number} skip: demand exists")
                     continue
 
-                ms.create_demand_from_customerorder(customerorder=co, order_number=order_number)
-                print(f"[{c.cabinet.name}] {order_number} demand created")
+                try:
+                    ms.create_demand_from_customerorder(customerorder=co, order_number=order_number)
+                    print(f"[{c.cabinet.name}] {order_number} demand created")
+                except HttpError as e:
+                    txt = e.text or ""
+                    # 3007: "Нельзя отгрузить товар, которого нет на складе"
+                    if e.status == 412 and ("3007" in txt or "Нельзя отгрузить" in txt or "нет на складе" in txt):
+                        print(f"[{c.cabinet.name}] {order_number} skip demand: no stock (3007)")
+                        continue
+                    raise
             else:
-                # статусы, где demand не нужен — просто обновили заказ и move
                 print(f"[{c.cabinet.name}] {order_number} done: state={state}")
