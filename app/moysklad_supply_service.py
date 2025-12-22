@@ -61,11 +61,15 @@ class MoySkladSupplyService:
     # ---------- helper: comment (ставим только при создании заказа) ----------
 
     def _build_comment_once(self, order_number: str, core: Dict[str, Any]) -> str:
-        wh_name = ((core.get("drop_off_warehouse") or {}).get("name")) or ""
-        wh_name = (wh_name or "").strip()
-        if wh_name:
-            return f"{order_number} - {wh_name}"
-        return str(order_number)
+    # Нужен склад назначения: supplies[0].storage_warehouse.name
+    supplies = core.get("supplies") or []
+    s0 = supplies[0] if supplies else {}
+    st = (s0.get("storage_warehouse") or {})
+    wh_name = (st.get("name") or "").strip()
+
+    if wh_name:
+        return f"{order_number} - {wh_name}"
+    return str(order_number)
 
     # ---------- assortment ----------
 
@@ -258,6 +262,7 @@ class MoySkladSupplyService:
             "targetStore": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_move_supply_id),
             "customerOrder": {"meta": (customerorder.get("meta") or {})},  # связь Move ↔ Order
+            "description": (customerorder.get("description") or ""),
             "applicable": False,  # сначала создадим/обновим, потом попробуем провести
         }
 
