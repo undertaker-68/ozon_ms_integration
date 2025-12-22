@@ -40,6 +40,19 @@ class MoySkladSupplyService:
             "Accept": "application/json;charset=utf-8",
         }
 
+    def find_demand_by_external_code(self, external_code: str) -> dict | None:
+        url = f"{self.base}/entity/demand"
+        params = {"filter": f"externalCode={external_code}"}
+        rep = request_json(
+            "GET",
+            url,
+            headers=self._headers(),
+            params=params,
+            timeout=60,
+        )
+        rows = rep.get("rows") or []
+        return rows[0] if rows else None
+
     def find_customerorder_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
         url = f"{self.base}/entity/customerorder"
         params = {"filter": f"externalCode={external_code}"}
