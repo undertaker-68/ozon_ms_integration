@@ -9,17 +9,18 @@ import requests
 
 
 @dataclass
-class HttpError(RuntimeError):
-    status_code: int
+class HttpError(Exception):
+    status: int
     text: str
     url: str
 
     def __str__(self) -> str:
-        return f"HTTP {self.status_code} for {self.url}: {self.text}"
+        return f"HTTP {self.status} for {self.url}: {self.text}"
 
 
-# Один Session на весь процесс = меньше SSL handshakes, лучше keep-alive
-_SESSION = requests.Session()
+def _is_json(text: str) -> bool:
+    t = (text or "").lstrip()
+    return t.startswith("{") or t.startswith("[")
 
 
 def request_json(
@@ -30,18 +31,22 @@ def request_json(
     params: Optional[Dict[str, Any]] = None,
     json_body: Any = None,
     timeout: int = 60,
-    retries: int = 4,
-    backoff: float = 2.0,
+    retries: int = 6,
 ) -> Any:
     """
-    Универсальный запрос с ретраями.
-    Ловим сетевые/таймаутные ошибки, которые часто бывают у api.moysklad.ru.
-    """
-    last_exc: Optional[BaseException] = None
+    Универсальный HTTP для проекта.
 
-    for attempt in range(1, retries + 1):
+    Важно:
+    - ретраи на 429 (MS rate limit) с экспоненциальным backoff
+    - ретраи на сетевые таймауты/SSL handshake timeout
+    - по умолчанию retries=6 достаточно для длинных прогонов
+    """
+    s = requests.Session()
+
+    last_err: Optional[Exception] = None
+    for attempt in range(retries + 1):
         try:
-            r = _SESSION.request(
+            r = s.request(
                 method=method,
                 url=url,
                 headers=headers,
@@ -50,58 +55,52 @@ def request_json(
                 timeout=timeout,
             )
 
-            # 429 / rate limit: подождать и повторить
+            # 429: ограничение запросов (часто у МС)
             if r.status_code == 429:
-                if attempt >= retries:
-                    raise HttpError(r.status_code, r.text, url)
-
+                # если MS отдает Retry-After — уважаем
                 ra = r.headers.get("Retry-After")
-                try:
-                    retry_after = int(ra) if ra else 5
-                except ValueError:
-                    retry_after = 5
-
-                sleep_s = max(retry_after, backoff ** (attempt - 1))
-                print(f"[http] rate-limit 429 for {method} {url} (sleep {sleep_s}s)")
-                time.sleep(sleep_s)
-                continue
-
-            # временные ошибки сервера — тоже ретраим
-            if r.status_code in (502, 503, 504):
-                if attempt >= retries:
-                    raise HttpError(r.status_code, r.text, url)
-                sleep_s = backoff ** (attempt - 1)
-                print(f"[http] server {r.status_code} for {method} {url} (sleep {sleep_s:.0f}s)")
+                if ra:
+                    try:
+                        sleep_s = float(ra)
+                    except Exception:
+                        sleep_s = 2.0
+                else:
+                    sleep_s = min(30.0, 1.5 * (2**attempt))
                 time.sleep(sleep_s)
                 continue
 
             if r.status_code >= 400:
                 raise HttpError(r.status_code, r.text, url)
 
-            # иногда API может вернуть пустое тело на DELETE
             if not r.text:
-                return {}
-
-            try:
+                return None
+            if _is_json(r.text):
                 return r.json()
-            except json.JSONDecodeError:
-                # если вдруг пришло не-json
-                return r.text
+            # иногда МС/Озон могут вернуть text/plain
+            return r.text
 
-        except (requests.exceptions.ReadTimeout,
-                requests.exceptions.ConnectTimeout,
-                requests.exceptions.ConnectionError,
-                requests.exceptions.SSLError) as e:
-            last_exc = e
-            if attempt >= retries:
-                raise
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+            last_err = e
+            # backoff
+            time.sleep(min(30.0, 1.5 * (2**attempt)))
+            continue
+        except requests.exceptions.SSLError as e:
+            last_err = e
+            time.sleep(min(30.0, 1.5 * (2**attempt)))
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_err = e
+            time.sleep(min(30.0, 1.5 * (2**attempt)))
+            continue
+        except HttpError as e:
+            # 5xx можно ретраить, остальное — нет
+            if 500 <= e.status < 600 and attempt < retries:
+                last_err = e
+                time.sleep(min(30.0, 1.5 * (2**attempt)))
+                continue
+            raise
 
-            # backoff: 2s, 4s, 8s ...
-            sleep_s = backoff ** (attempt - 1)
-            print(f"[http] retry {attempt}/{retries} {method} {url} due to {type(e).__name__} (sleep {sleep_s:.0f}s)")
-            time.sleep(sleep_s)
-
-    # на практике не дойдёт, но пусть будет
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("request_json failed without exception")
+    # если сюда дошли — все ретраи исчерпаны
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"request_json failed for {url}")
