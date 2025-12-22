@@ -73,13 +73,9 @@ def _planned_local_date(order: Dict[str, Any]) -> Optional[date]:
 
 
 def _planned_ms_moment(d: date) -> str:
-    """
-    MS требует moment: "YYYY-MM-DD HH:MM:SS.mmm+0000"
-    Важна только дата -> ставим 00:00:00 UTC.
-    """
-    dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+0000"
-
+    # Формат, который МС стабильно принимает/показывает:
+    # "YYYY-MM-DD HH:MM:SS.mmm" (без таймзоны)
+    return f"{d.isoformat()} 00:00:00.000"
 
 def sync_fbo_supplies(*, ms_token: str, cabinets: List[CabinetRuntime]) -> None:
     dry_run = _env_bool("FBO_DRY_RUN", "0")
