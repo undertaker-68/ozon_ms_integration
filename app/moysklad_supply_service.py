@@ -61,17 +61,35 @@ class MoySkladSupplyService:
             "Accept": "application/json;charset=utf-8",
         }
 
-    # ---------- helper: comment (ставим только при создании заказа) ----------
+    # ---------- helper: destination name for comment ----------
 
-    def _build_comment_once(self, order_number: str, core: Dict[str, Any]) -> str:
+    def _destination_warehouse_name(self, core: Dict[str, Any]) -> str:
         """
-        Комментарий: <номер> - <склад назначения>
-        Склад назначения берем из supplies[0].storage_warehouse.name
+        Склад назначения:
+        - предпочитаем supplies[0].storage_warehouse.name
+        - если пусто, fallback: supplies[0].storage_warehouse.address/name, затем drop_off_warehouse.name
         """
         supplies = core.get("supplies") or []
         s0 = supplies[0] if supplies else {}
         st = (s0.get("storage_warehouse") or {})
-        wh_name = (st.get("name") or "").strip()
+        name = (st.get("name") or "").strip()
+        if name:
+            return name
+
+        # fallback (на всякий случай)
+        name = (st.get("address") or "").strip()
+        if name:
+            return name
+
+        do = (core.get("drop_off_warehouse") or {})
+        name = (do.get("name") or "").strip()
+        return name
+
+    def _build_comment_once(self, order_number: str, core: Dict[str, Any]) -> str:
+        """
+        Комментарий: <номер> - <склад назначения>
+        """
+        wh_name = self._destination_warehouse_name(core)
         if wh_name:
             return f"{order_number} - {wh_name}"
         return str(order_number)
@@ -94,10 +112,6 @@ class MoySkladSupplyService:
         return a
 
     def get_assortment_by_href(self, href: str) -> Optional[Dict[str, Any]]:
-        """
-        Нужен для компонентов комплектов (bundle->components->assortment.meta.href),
-        чтобы достать цены/мету без гаданий.
-        """
         href = (href or "").strip()
         if not href:
             return None
@@ -112,9 +126,10 @@ class MoySkladSupplyService:
 
     def _pick_sale_price_value(self, assortment: Dict[str, Any]) -> int:
         """
-        Цена в МС в копейках (int).
-        Берем salePrices[0].value если есть, иначе 0.
+        Цена МС в копейках (int). Берём salePrices[0].value если есть.
         """
+        if not assortment:
+            return 0
         sp = assortment.get("salePrices") or []
         if sp:
             v = sp[0].get("value")
@@ -126,7 +141,7 @@ class MoySkladSupplyService:
                 return 0
         return 0
 
-    # ---------- bundle (комплект) ----------
+    # ---------- bundle ----------
 
     def get_bundle(self, bundle_id: str) -> Optional[Dict[str, Any]]:
         bundle_id = (bundle_id or "").strip()
@@ -167,7 +182,6 @@ class MoySkladSupplyService:
                 request_json("DELETE", f"{list_url}/{pid}", headers=self._headers(), timeout=60)
 
         if positions:
-            # В вашем МС корректно работает POST массива позиций
             request_json("POST", list_url, headers=self._headers(), json_body=positions, timeout=120)
 
     def get_customerorder_positions(self, customerorder_id: str) -> List[Dict[str, Any]]:
@@ -178,6 +192,77 @@ class MoySkladSupplyService:
     def delete_customerorder(self, customerorder_id: str) -> None:
         url = f"{self.base}/entity/customerorder/{customerorder_id}"
         request_json("DELETE", url, headers=self._headers(), timeout=60)
+
+    # ---------- positions expansion (bundle -> components) ----------
+
+    def _expand_items_to_component_positions(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        ВАЖНО: Разворачиваем bundle в компоненты для CustomerOrder (по вашему требованию).
+        Аггрегируем по href компонента.
+        Для каждой позиции: assortment.meta + quantity + price (sale price).
+        """
+        agg_qty: Dict[str, float] = {}               # href -> qty
+        meta_by_href: Dict[str, Dict[str, Any]] = {} # href -> meta
+        price_by_href: Dict[str, int] = {}           # href -> price
+
+        def remember(href: str, meta: Dict[str, Any], qty: float, price: int) -> None:
+            if not href or qty <= 0:
+                return
+            agg_qty[href] = agg_qty.get(href, 0.0) + qty
+            if href not in meta_by_href and meta:
+                meta_by_href[href] = meta
+            if href not in price_by_href:
+                price_by_href[href] = int(price or 0)
+
+        for it in items or []:
+            offer_id = str(it.get("offer_id") or "").strip()
+            qty = float(it.get("quantity") or 0)
+            if not offer_id or qty <= 0:
+                continue
+
+            a = self.find_assortment_by_article(offer_id)
+            if not a:
+                continue
+
+            a_meta = (a.get("meta") or {})
+            a_type = (a_meta.get("type") or "").lower()
+            a_href = (a_meta.get("href") or "").strip()
+
+            if a_type == "bundle" and a_href:
+                bundle_id = a_href.rstrip("/").split("/")[-1]
+                b = self.get_bundle(bundle_id)
+                comps = ((b or {}).get("components") or {}).get("rows") or []
+                for c in comps:
+                    c_qty = float(c.get("quantity") or 0)
+                    c_ass_meta = ((c.get("assortment") or {}).get("meta") or {})
+                    c_href = (c_ass_meta.get("href") or "").strip()
+                    if not c_href or c_qty <= 0:
+                        continue
+
+                    comp = self.get_assortment_by_href(c_href)
+                    comp_price = self._pick_sale_price_value(comp) if comp else 0
+                    remember(c_href, c_ass_meta, qty * c_qty, comp_price)
+            else:
+                price = self._pick_sale_price_value(a)
+                remember(a_href, a_meta, qty, price)
+
+        positions: List[Dict[str, Any]] = []
+        for href, q in agg_qty.items():
+            if q <= 0:
+                continue
+            meta = meta_by_href.get(href)
+            if not meta:
+                parts = href.rstrip("/").split("/")
+                ent_type = parts[-2] if len(parts) >= 2 else "assortment"
+                meta = {"href": href, "type": ent_type, "mediaType": "application/json"}
+            positions.append(
+                {
+                    "assortment": {"meta": meta},
+                    "quantity": q,
+                    "price": int(price_by_href.get(href, 0)),
+                }
+            )
+        return positions
 
     def upsert_customerorder(
         self,
@@ -201,6 +286,7 @@ class MoySkladSupplyService:
             "applicable": True,  # Заказ ВСЕГДА проведен
         }
 
+        # shipmentPlannedMoment MUST be moment-string
         if shipment_planned_moment:
             payload["shipmentPlannedMoment"] = shipment_planned_moment
 
@@ -214,19 +300,8 @@ class MoySkladSupplyService:
             payload["description"] = self._build_comment_once(order_number, core)
             co = self.create_customerorder(payload)
 
-        # позиции пересобираем полностью (если demand нет — гарантируется снаружи)
-        positions: List[Dict[str, Any]] = []
-        for it in items or []:
-            offer_id = str(it.get("offer_id") or "").strip()
-            qty = float(it.get("quantity") or 0)
-            if not offer_id or qty <= 0:
-                continue
-            a = self.find_assortment_by_article(offer_id)
-            if not a:
-                continue
-            price = self._pick_sale_price_value(a)
-            positions.append({"assortment": {"meta": a["meta"]}, "quantity": qty, "price": price})
-
+        # позиции пересобираем полностью: bundle -> components (чтобы Move не был пустым)
+        positions = self._expand_items_to_component_positions(items)
         self.replace_customerorder_positions(co["id"], positions)
         return co
 
@@ -264,80 +339,6 @@ class MoySkladSupplyService:
         url = f"{self.base}/entity/move/{move_id}"
         request_json("DELETE", url, headers=self._headers(), timeout=60)
 
-    def _expand_items_to_move_positions(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Позиции Move:
-        - обычные товары: assortment + qty + price (sale price)
-        - bundle: раскрываем в компоненты (bundle.components.rows),
-                 для каждого компонента: assortment meta + qty*component_qty + price (sale price компонента)
-        """
-        agg: Dict[str, float] = {}      # href -> qty
-        meta_by_href: Dict[str, Dict[str, Any]] = {}  # href -> meta
-        price_by_href: Dict[str, int] = {}            # href -> price
-
-        def _remember(href: str, meta: Dict[str, Any], qty: float, price: int) -> None:
-            if not href:
-                return
-            agg[href] = agg.get(href, 0.0) + qty
-            if href not in meta_by_href and meta:
-                meta_by_href[href] = meta
-            if href not in price_by_href:
-                price_by_href[href] = int(price or 0)
-
-        for it in items or []:
-            offer_id = str(it.get("offer_id") or "").strip()
-            qty = float(it.get("quantity") or 0)
-            if not offer_id or qty <= 0:
-                continue
-
-            a = self.find_assortment_by_article(offer_id)
-            if not a:
-                continue
-
-            a_meta = (a.get("meta") or {})
-            a_type = (a_meta.get("type") or "").lower()
-            a_href = a_meta.get("href") or ""
-
-            if a_type == "bundle" and a_href:
-                bundle_id = a_href.rstrip("/").split("/")[-1]
-                b = self.get_bundle(bundle_id)
-                comps = ((b or {}).get("components") or {}).get("rows") or []
-                for c in comps:
-                    c_qty = float(c.get("quantity") or 0)
-                    c_ass_meta = ((c.get("assortment") or {}).get("meta") or {})
-                    c_href = (c_ass_meta.get("href") or "").strip()
-                    if not c_href or c_qty <= 0:
-                        continue
-
-                    # цена компонента: пробуем получить сущность по href и взять salePrices
-                    comp = self.get_assortment_by_href(c_href)
-                    comp_price = self._pick_sale_price_value(comp) if comp else 0
-
-                    _remember(c_href, c_ass_meta, qty * c_qty, comp_price)
-            else:
-                price = self._pick_sale_price_value(a)
-                _remember(a_href, a_meta, qty, price)
-
-        move_positions: List[Dict[str, Any]] = []
-        for href, q in agg.items():
-            if q <= 0:
-                continue
-            meta = meta_by_href.get(href)
-            if not meta:
-                # fallback meta восстановим по href (type из URL)
-                parts = href.rstrip("/").split("/")
-                ent_type = parts[-2] if len(parts) >= 2 else "assortment"
-                meta = {"href": href, "type": ent_type, "mediaType": "application/json"}
-            move_positions.append(
-                {
-                    "assortment": {"meta": meta},
-                    "quantity": q,
-                    "price": int(price_by_href.get(href, 0)),
-                }
-            )
-
-        return move_positions
-
     def upsert_move_linked_to_order(
         self,
         *,
@@ -348,9 +349,8 @@ class MoySkladSupplyService:
     ) -> Dict[str, Any]:
         """
         Move создаем/обновляем всегда, если demand еще нет.
-        Обязательная связь: customerOrder (для "Связанные документы").
-        Позиции Move = позиции заказа, но:
-          - комплекты (bundle) в Move запрещены -> раскрываем в компоненты.
+        Связь: customerOrder (для "Связанные документы").
+        Позиции Move = позиции заказа (уже без bundle).
         Пытаемся провести move. Если ошибка остатков (3007) -> оставляем непроведенным.
         """
         existing = self.find_move_by_external_code(order_number)
@@ -362,9 +362,9 @@ class MoySkladSupplyService:
             "sourceStore": ms_meta("store", self.cfg.store_src_id),
             "targetStore": ms_meta("store", self.cfg.store_fbo_id),
             "state": ms_meta("state", self.cfg.state_move_supply_id),
-            "customerOrder": {"meta": (customerorder.get("meta") or {})},  # связь Move ↔ Order
-            "description": (customerorder.get("description") or ""),       # комментарий как у заказа
-            "applicable": False,  # сначала позиции, потом пробуем провести
+            "customerOrder": {"meta": (customerorder.get("meta") or {})},
+            "description": (customerorder.get("description") or ""),
+            "applicable": False,
         }
 
         if dry_run:
@@ -375,18 +375,16 @@ class MoySkladSupplyService:
         else:
             mv = self.create_move(payload)
 
-        move_positions = self._expand_items_to_move_positions(items)
+        # позиции берём из items, но items уже превращаем в компоненты (как в заказе)
+        move_positions = self._expand_items_to_component_positions(items)
         self.replace_move_positions(mv["id"], move_positions)
 
-        # ----- try conduct move -----
         try:
             mv2 = self.update_move(mv["id"], {"applicable": True})
             return mv2
         except HttpError as e:
-            # 3007: "Нельзя переместить товар, которого нет на складе"
-            if e.status in (400, 412) and (
-                "3007" in (e.text or "") or "Нельзя переместить" in (e.text or "") or "нет на складе" in (e.text or "")
-            ):
+            txt = e.text or ""
+            if e.status in (400, 412) and ("3007" in txt or "Нельзя переместить" in txt or "нет на складе" in txt):
                 self.update_move(mv["id"], {"applicable": False})
                 mv["applicable"] = False
                 return mv
@@ -406,7 +404,7 @@ class MoySkladSupplyService:
         Demand создаем НЕ пустой:
         - позиции берем из CustomerOrder
         - salesChannel + description дублируем
-        - номер demand оставляем как в МС (хронология), поэтому name не задаем
+        - name не задаем (хронология МС)
         """
         url = f"{self.base}/entity/demand"
 
