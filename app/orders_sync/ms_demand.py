@@ -181,6 +181,25 @@ class DemandService:
         - если demand уже есть: удаляем лишние, заполняем если пустая, лечим цены
         - если нет: создаём сразу с позициями и правильными ценами
         """
+        # 0) Антидубль: самый надежный ключ = externalCode == posting_number
+        pn = (posting_number or "").strip()
+        if not pn:
+            return None
+
+        # Сначала ищем по externalCode. Если есть несколько — оставляем одну, остальные удаляем.
+        demands = self.ms.find_demands_by_external_code(pn)
+        if demands:
+            demands_sorted = sorted(demands, key=lambda d: d.get("moment") or d.get("created") or "")
+            keep = demands_sorted[0]
+            for d in demands_sorted[1:]:
+                did = d.get("id")
+                if did:
+                    self.delete_demand(did)
+
+            self._fill_demand_positions_if_empty(keep, customerorder)
+            self._fix_demand_prices_zero(keep, customerorder)
+            return keep
+
         # 1) Если уже есть demand(ы) по заказу — оставить одну, остальное удалить
         existing = self.ensure_single_demand_for_order(customerorder)
         if existing:
