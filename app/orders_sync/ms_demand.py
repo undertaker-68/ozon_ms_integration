@@ -225,7 +225,7 @@ class DemandService:
             "positions": {"rows": rows},
         }
 
-        try:
+                try:
             created = self.ms.post("/entity/demand", json=payload)
         except HttpError as e:
             http_status = getattr(e, "status_code", None) or getattr(e, "status", None) or getattr(e, "code", None)
@@ -234,6 +234,15 @@ class DemandService:
             # Нельзя отгрузить товар, которого нет на складе → просто пропускаем
             if http_status == 412 and "3007" in body:
                 return None
+
+            # Если demand уже создан где-то параллельно — просто находим и возвращаем
+            if http_status in (409, 412):
+                existing = self.ms.find_one_demand_by_external_code(pn)
+                if existing:
+                    self._fill_demand_positions_if_empty(existing, customerorder)
+                    self._fix_demand_prices_zero(existing, customerorder)
+                    return existing
+
             raise
 
         if not created:
