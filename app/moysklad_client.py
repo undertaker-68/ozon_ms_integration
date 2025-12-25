@@ -203,3 +203,22 @@ class MoySkladClient:
                 if isinstance(rows, list):
                     return rows
         return []
+
+    def find_demands_by_external_code(self, external_code: str) -> list[dict]:
+        url = f"{MS_BASE}/entity/demand"
+        data = request_json(
+            "GET",
+            url,
+            headers=self.headers,
+            params={"filter": f"externalCode={external_code}", "limit": 1000},
+            timeout=60,
+        )
+        return data.get("rows") or []
+
+    def find_one_demand_by_external_code(self, external_code: str) -> dict | None:
+        rows = self.find_demands_by_external_code(external_code)
+        if not rows:
+            return None
+        # берём самый ранний (стабильно)
+        rows.sort(key=lambda d: d.get("created") or "")
+        return rows[0]
