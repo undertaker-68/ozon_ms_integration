@@ -173,7 +173,7 @@ class DemandService:
         posting_number: str,
         sales_channel_id: str,
         demand_state_id: str = MS_DEMAND_STATE_FBS_ID,
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Создаём Demand (Отгрузку) из CustomerOrder.
         Красиво:
