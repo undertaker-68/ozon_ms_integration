@@ -215,7 +215,7 @@ class DemandService:
         rows = self._get_customerorder_positions(customerorder)
 
         payload: Dict[str, Any] = {
-            "externalCode": posting_number,  # удобно для поиска/аналитики, но не полагаемся на него
+            "externalCode": pn,  # удобно для поиска/аналитики, но не полагаемся на него
             "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
             "store": ms_meta("store", MS_STORE_OZON_ID),
             "organization": ms_meta("organization", MS_ORGANIZATION_ID),
