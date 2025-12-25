@@ -215,7 +215,7 @@ class DemandService:
         rows = self._get_customerorder_positions(customerorder)
 
         payload: Dict[str, Any] = {
-            "externalCode": pn,  # удобно для поиска/аналитики, но не полагаемся на него
+            "externalCode": pn,  # ключ идемпотентности: posting_number
             "agent": ms_meta("counterparty", MS_COUNTERPARTY_OZON_ID),
             "store": ms_meta("store", MS_STORE_OZON_ID),
             "organization": ms_meta("organization", MS_ORGANIZATION_ID),
@@ -225,7 +225,7 @@ class DemandService:
             "positions": {"rows": rows},
         }
 
-                try:
+        try:
             created = self.ms.post("/entity/demand", json=payload)
         except HttpError as e:
             http_status = getattr(e, "status_code", None) or getattr(e, "status", None) or getattr(e, "code", None)
